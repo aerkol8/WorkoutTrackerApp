@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "FullPot",
+    "slug": "FullPot",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/fp.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/fp.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/fp.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/fp.png"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}

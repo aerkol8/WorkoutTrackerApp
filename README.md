@@ -9,7 +9,7 @@ A comprehensive fitness tracking mobile application built with React Native and 
 
 ## 📱 Screenshots
 
-<!-- Add your screenshots here -->
+
 | Home | Workout | Nutrition | Profile |
 |:----:|:-------:|:---------:|:-------:|
 | ![Home](screenshots/home.png) | ![Workout](screenshots/workout.png) | ![Nutrition](screenshots/nutrition.png) | ![Profile](screenshots/profile.png) |
@@ -199,14 +199,27 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+## � API Integration
+
+- **Nutritionix API** - Food database search with macro information
+- **Firebase Firestore** - Real-time database for user data
+- **Firebase Authentication** - Secure user authentication
+- **Expo Notifications** - Push notifications for workout timers
+
+## 🧮 Key Algorithms
+
+- **Brzycki Formula** - 1RM Estimation: `1RM = weight × (36 / (37 - reps))`
+- **US Navy Body Fat Formula** - Accurate body composition calculation
+- **PR Detection** - Automatic tracking of personal records
+
 ## 👨‍💻 Author
 
-**Your Name**
+**Alper Erkol**
 - GitHub: [@aerkol8](https://github.com/aerkol8)
 - LinkedIn: [Alper Erkol](https://www.linkedin.com/in/alper-erkol-585847313/)
 
 ---
 
 <p align="center">
-  Made with  React Native
+  Made with ❤️ using React Native
 </p>

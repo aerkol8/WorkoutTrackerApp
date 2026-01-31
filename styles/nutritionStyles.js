@@ -421,6 +421,12 @@ export const styles = StyleSheet.create({
     flex: 1,
     paddingTop: 10,
   },
+  customFormScroll: {
+    flex: 1,
+  },
+  customFormScrollContent: {
+    paddingBottom: 30,
+  },
   customFormTitle: {
     color: '#BB86FC',
     fontSize: 18,
@@ -461,6 +467,92 @@ export const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 20,
     fontStyle: 'italic',
+  },
+  
+  // Entry Type Selection
+  entryTypeContainer: {
+    flex: 1,
+    paddingTop: 30,
+  },
+  entryTypeQuestion: {
+    color: '#fff',
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 30,
+  },
+  entryTypeBtn: {
+    backgroundColor: '#1E1E1E',
+    padding: 20,
+    borderRadius: 16,
+    marginBottom: 15,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  entryTypeBtnContent: {
+    flex: 1,
+    marginLeft: 15,
+  },
+  entryTypeBtnTitle: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  entryTypeBtnDesc: {
+    color: '#888',
+    fontSize: 12,
+  },
+  quickPortionsCustom: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  quickBtnSmall: {
+    backgroundColor: '#1E1E1E',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#333',
+  },
+  quickBtnSmallActive: {
+    backgroundColor: '#BB86FC',
+    borderColor: '#BB86FC',
+  },
+  quickBtnSmallText: {
+    color: '#888',
+    fontSize: 14,
+  },
+  quickBtnSmallTextActive: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  customPreviewCard: {
+    backgroundColor: '#2A1D3D',
+    padding: 15,
+    borderRadius: 12,
+    marginTop: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#BB86FC55',
+  },
+  customPreviewTitle: {
+    color: '#BB86FC',
+    fontSize: 12,
+    marginBottom: 5,
+  },
+  customPreviewCalories: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: 'bold',
+  },
+  customPreviewPortion: {
+    color: '#888',
+    fontSize: 14,
+    marginTop: 5,
   },
   
   // Result

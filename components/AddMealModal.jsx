@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   View, Text, FlatList, TextInput, 
   TouchableOpacity, Modal, ActivityIndicator, Alert,
-  Keyboard, TouchableWithoutFeedback
+  Keyboard, TouchableWithoutFeedback, ScrollView, KeyboardAvoidingView, Platform
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { styles } from '../styles/nutritionStyles';
@@ -37,6 +37,8 @@ export default function AddMealModal({
   const [customProtein, setCustomProtein] = useState('');
   const [customCarbs, setCustomCarbs] = useState('');
   const [customFat, setCustomFat] = useState('');
+  const [entryType, setEntryType] = useState(null); // 'per100g' veya 'perPiece'
+  const [customAmount, setCustomAmount] = useState('100'); // gram miktarı
 
   // Initialize editing meal
   useEffect(() => {
@@ -67,6 +69,8 @@ export default function AddMealModal({
     setCustomFat('');
     setModalTab('search');
     setPortion('100');
+    setEntryType(null);
+    setCustomAmount('100');
   };
 
   const handleClose = () => {
@@ -142,14 +146,34 @@ export default function AddMealModal({
 
     const brandName = isGuest ? 'Guest' : (user?.email?.split('@')[0] || 'User');
 
+    let finalCalories, finalProtein, finalCarbs, finalFat, portionText;
+
+    if (entryType === 'per100g') {
+      // Per 100g entry, calculate based on amount
+      const amount = parseFloat(customAmount) || 100;
+      const multiplier = amount / 100;
+      finalCalories = Math.round(calories * multiplier);
+      finalProtein = Math.round(protein * multiplier);
+      finalCarbs = Math.round(carbs * multiplier);
+      finalFat = Math.round(fat * multiplier);
+      portionText = `${amount}g`;
+    } else {
+      // Per piece entry, use directly
+      finalCalories = Math.round(calories);
+      finalProtein = Math.round(protein);
+      finalCarbs = Math.round(carbs);
+      finalFat = Math.round(fat);
+      portionText = '1 piece';
+    }
+
     const meal = {
       name: customName.trim(),
       brand: brandName,
-      calories: Math.round(calories),
-      protein: Math.round(protein),
-      carbs: Math.round(carbs),
-      fat: Math.round(fat),
-      portion: '1 porsiyon',
+      calories: finalCalories,
+      protein: finalProtein,
+      carbs: finalCarbs,
+      fat: finalFat,
+      portion: portionText,
       isCustom: true,
       mealType: addingMealType
     };
@@ -309,86 +333,194 @@ export default function AddMealModal({
             </>
           ) : showCustomForm ? (
             /* CUSTOM MEAL FORM */
-            <View style={styles.customFormContainer}>
+            <KeyboardAvoidingView 
+              style={styles.customFormContainer} 
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            >
               <Text style={styles.customFormTitle}>Create Custom Meal</Text>
-              <Text style={styles.customFormSubtitle}>
-                📝 Enter values per 100 grams
-              </Text>
               
-              <Text style={styles.inputLabel}>Food Name *</Text>
-              <TextInput
-                style={styles.customInput}
-                placeholder="E.g., Homemade rice"
-                placeholderTextColor="#666"
-                value={customName}
-                onChangeText={setCustomName}
-              />
-
-              <Text style={styles.inputLabel}>Calories / 100g (optional)</Text>
-              <TextInput
-                style={styles.customInput}
-                placeholder="Leave empty to calculate from macros"
-                placeholderTextColor="#666"
-                keyboardType="numeric"
-                value={customCalories}
-                onChangeText={setCustomCalories}
-              />
-
-              <View style={styles.macroInputRow}>
-                <View style={styles.macroInputItem}>
-                  <Text style={styles.inputLabel}>Protein / 100g</Text>
-                  <TextInput
-                    style={styles.customInput}
-                    placeholder="0"
-                    placeholderTextColor="#666"
-                    keyboardType="numeric"
-                    value={customProtein}
-                    onChangeText={setCustomProtein}
-                  />
+              {!entryType ? (
+                /* STEP 1: Entry type selection */
+                <View style={styles.entryTypeContainer}>
+                  <Text style={styles.entryTypeQuestion}>
+                    How would you like to enter the nutritional values?
+                  </Text>
+                  
+                  <TouchableOpacity 
+                    style={styles.entryTypeBtn}
+                    onPress={() => setEntryType('per100g')}
+                  >
+                    <Ionicons name="scale-outline" size={32} color="#BB86FC" />
+                    <View style={styles.entryTypeBtnContent}>
+                      <Text style={styles.entryTypeBtnTitle}>Per 100 grams</Text>
+                      <Text style={styles.entryTypeBtnDesc}>
+                        Enter values per 100g, then specify the amount
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={styles.entryTypeBtn}
+                    onPress={() => setEntryType('perPiece')}
+                  >
+                    <Ionicons name="nutrition-outline" size={32} color="#BB86FC" />
+                    <View style={styles.entryTypeBtnContent}>
+                      <Text style={styles.entryTypeBtnTitle}>Per piece/serving</Text>
+                      <Text style={styles.entryTypeBtnDesc}>
+                        Enter total values for one serving
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={styles.backBtn}
+                    onPress={() => setShowCustomForm(false)}
+                  >
+                    <Text style={styles.backBtnText}>Back</Text>
+                  </TouchableOpacity>
                 </View>
-                <View style={styles.macroInputItem}>
-                  <Text style={styles.inputLabel}>Carbs / 100g</Text>
-                  <TextInput
-                    style={styles.customInput}
-                    placeholder="0"
-                    placeholderTextColor="#666"
-                    keyboardType="numeric"
-                    value={customCarbs}
-                    onChangeText={setCustomCarbs}
-                  />
-                </View>
-                <View style={styles.macroInputItem}>
-                  <Text style={styles.inputLabel}>Fat / 100g</Text>
-                  <TextInput
-                    style={styles.customInput}
-                    placeholder="0"
-                    placeholderTextColor="#666"
-                    keyboardType="numeric"
-                    value={customFat}
-                    onChangeText={setCustomFat}
-                  />
-                </View>
-              </View>
-
-              <Text style={styles.calorieHint}>
-                💡 Calorie calculation: Protein×4 + Carbs×4 + Fat×9
-              </Text>
-
-              <View style={styles.buttonRow}>
-                <TouchableOpacity 
-                  style={styles.backBtn}
-                  onPress={() => setShowCustomForm(false)}
+              ) : (
+                /* STEP 2: Value entry */
+                <ScrollView 
+                  style={styles.customFormScroll}
+                  contentContainerStyle={styles.customFormScrollContent}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
                 >
-                  <Text style={styles.backBtnText}>Back</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.addBtn}
-                  onPress={handleAddCustomMeal}
-                >
-                  <Text style={styles.addBtnText}>Add</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+                  <Text style={styles.customFormSubtitle}>
+                    {entryType === 'per100g' 
+                      ? '📝 Enter values per 100 grams' 
+                      : '📝 Enter total values for 1 piece/serving'}
+                  </Text>
+                  
+                  <Text style={styles.inputLabel}>Food Name *</Text>
+                  <TextInput
+                    style={styles.customInput}
+                    placeholder="E.g., Homemade rice"
+                    placeholderTextColor="#666"
+                    value={customName}
+                    onChangeText={setCustomName}
+                  />
+
+                  <Text style={styles.inputLabel}>
+                    Calories {entryType === 'per100g' ? '/ 100g' : '/ 1 piece'} (optional)
+                  </Text>
+                  <TextInput
+                    style={styles.customInput}
+                    placeholder="Leave empty to calculate from macros"
+                    placeholderTextColor="#666"
+                    keyboardType="numeric"
+                    value={customCalories}
+                    onChangeText={setCustomCalories}
+                  />
+
+                  <View style={styles.macroInputRow}>
+                    <View style={styles.macroInputItem}>
+                      <Text style={styles.inputLabel}>
+                        Protein {entryType === 'per100g' ? '/ 100g' : ''}
+                      </Text>
+                      <TextInput
+                        style={styles.customInput}
+                        placeholder="0"
+                        placeholderTextColor="#666"
+                        keyboardType="numeric"
+                        value={customProtein}
+                        onChangeText={setCustomProtein}
+                      />
+                    </View>
+                    <View style={styles.macroInputItem}>
+                      <Text style={styles.inputLabel}>
+                        Carbs {entryType === 'per100g' ? '/ 100g' : ''}
+                      </Text>
+                      <TextInput
+                        style={styles.customInput}
+                        placeholder="0"
+                        placeholderTextColor="#666"
+                        keyboardType="numeric"
+                        value={customCarbs}
+                        onChangeText={setCustomCarbs}
+                      />
+                    </View>
+                    <View style={styles.macroInputItem}>
+                      <Text style={styles.inputLabel}>
+                        Fat {entryType === 'per100g' ? '/ 100g' : ''}
+                      </Text>
+                      <TextInput
+                        style={styles.customInput}
+                        placeholder="0"
+                        placeholderTextColor="#666"
+                        keyboardType="numeric"
+                        value={customFat}
+                        onChangeText={setCustomFat}
+                      />
+                    </View>
+                  </View>
+
+                  {entryType === 'per100g' && (
+                    <>
+                      <Text style={styles.inputLabel}>Amount (grams) *</Text>
+                      <TextInput
+                        style={styles.customInput}
+                        placeholder="100"
+                        placeholderTextColor="#666"
+                        keyboardType="numeric"
+                        value={customAmount}
+                        onChangeText={setCustomAmount}
+                      />
+                      <View style={styles.quickPortionsCustom}>
+                        {['50', '100', '150', '200', '250'].map((g) => (
+                          <TouchableOpacity 
+                            key={g}
+                            style={[styles.quickBtnSmall, customAmount === g && styles.quickBtnSmallActive]}
+                            onPress={() => setCustomAmount(g)}
+                          >
+                            <Text style={[styles.quickBtnSmallText, customAmount === g && styles.quickBtnSmallTextActive]}>{g}g</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </>
+                  )}
+
+                  {/* Preview */}
+                  {(customCalories || customProtein || customCarbs || customFat) && (
+                    <View style={styles.customPreviewCard}>
+                      <Text style={styles.customPreviewTitle}>To be added:</Text>
+                      <Text style={styles.customPreviewCalories}>
+                        {(() => {
+                          const cal = parseFloat(customCalories) || ((parseFloat(customProtein) || 0) * 4 + (parseFloat(customCarbs) || 0) * 4 + (parseFloat(customFat) || 0) * 9);
+                          if (entryType === 'per100g') {
+                            return Math.round(cal * (parseFloat(customAmount) || 100) / 100);
+                          }
+                          return Math.round(cal);
+                        })()} kcal
+                      </Text>
+                      <Text style={styles.customPreviewPortion}>
+                        {entryType === 'per100g' ? `${customAmount || 100}g` : '1 piece'}
+                      </Text>
+                    </View>
+                  )}
+
+                  <Text style={styles.calorieHint}>
+                    💡 Calorie calculation: Protein×4 + Carbs×4 + Fat×9
+                  </Text>
+
+                  <View style={styles.buttonRow}>
+                    <TouchableOpacity 
+                      style={styles.backBtn}
+                      onPress={() => setEntryType(null)}
+                    >
+                      <Text style={styles.backBtnText}>Back</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity 
+                      style={styles.addBtn}
+                      onPress={handleAddCustomMeal}
+                    >
+                      <Text style={styles.addBtnText}>Add</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              )}
+            </KeyboardAvoidingView>
           ) : (
             /* PORTION INPUT */
             <View style={styles.portionContainer}>

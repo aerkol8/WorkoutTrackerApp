@@ -30,7 +30,7 @@ export const AuthProvider = ({ children }) => {
         }
 
         // Firebase auth durumunu dinle
-          unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+        unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
           if (firebaseUser) {
             setUser(firebaseUser);
             setIsGuest(false);
@@ -39,20 +39,18 @@ export const AuthProvider = ({ children }) => {
           }
           setLoading(false);
         });
-
       } catch (error) {
         console.error('Auth check error:', error);
         setLoading(false);
       }
-
-      checkAuthStatus();
-
-        return ()=> {
-          if(typeof unsubscribe ==='function')
-                unsubscribe();
-        };
     };
+    checkAuthStatus();
 
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
   }, []);
 
   // Sign in with email

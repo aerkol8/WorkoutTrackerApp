@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../config/firebase';
@@ -14,6 +14,7 @@ export const WorkoutProvider = ({ children }) => {
   const [library, setLibrary] = useState([]); // Exercise library state
   const [dataLoaded, setDataLoaded] = useState(false); // Data loaded from source?
   const [loadedUserId, setLoadedUserId] = useState(null); // Which user's data was loaded
+  const lastSavedRef = useRef(null); // Track last saved data to prevent duplicate saves
 
   // Clear state when auth is completely signed out
   useEffect(() => {
@@ -44,11 +45,16 @@ export const WorkoutProvider = ({ children }) => {
           const storedRoutines = await AsyncStorage.getItem('@routines');
           const storedHistory = await AsyncStorage.getItem('@history');
 
-          setRoutines(storedRoutines ? JSON.parse(storedRoutines) : []);
-          setHistory(storedHistory ? JSON.parse(storedHistory) : []);
+          const routinesData = storedRoutines ? JSON.parse(storedRoutines) : [];
+          const historyData = storedHistory ? JSON.parse(storedHistory) : [];
+
+          setRoutines(routinesData);
+          setHistory(historyData);
 
           setLoadedUserId('guest');
           setDataLoaded(true);
+
+          lastSavedRef.current = JSON.stringify({ routines: routinesData, history: historyData });
         } else if (user) {
           // USER LOGGED IN: Load from Firestore (real-time)
           const userDocRef = doc(db, 'users', user.uid);
@@ -56,11 +62,18 @@ export const WorkoutProvider = ({ children }) => {
           unsubscribe = onSnapshot(userDocRef, (docSnap) => {
             if (docSnap.exists()) {
               const data = docSnap.data();
-              setRoutines(data.routines || []);
-              setHistory(data.history || []);
+              const routinesData = data.routines || [];
+              const historyData = data.history || [];
+
+              setRoutines(routinesData);
+              setHistory(historyData);
+
+              lastSavedRef.current = JSON.stringify({ routines: routinesData, history: historyData });
             } else {
               setRoutines([]);
               setHistory([]);
+
+              lastSavedRef.current = JSON.stringify({ routines: [], history: [] });
             }
             setLoadedUserId(user.uid);
             setDataLoaded(true);
@@ -92,6 +105,9 @@ export const WorkoutProvider = ({ children }) => {
 
     const saveData = async () => {
       try {
+        const payloadStr = JSON.stringify({ routines, history });
+        if (lastSavedRef.current === payloadStr) return;
+
         if (isGuest) {
           // GUEST MODE: Save to AsyncStorage
           await AsyncStorage.setItem('@routines', JSON.stringify(routines));
@@ -105,6 +121,8 @@ export const WorkoutProvider = ({ children }) => {
             updatedAt: new Date().toISOString()
           }, { merge: true });
         }
+
+        lastSavedRef.current = payloadStr;
       } catch (e) {
         // Ignore permission errors silently (may happen during logout)
         if (e?.code === 'permission-denied' || e?.message?.includes('permission')) {

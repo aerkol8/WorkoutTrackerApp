@@ -17,6 +17,7 @@ export const AuthProvider = ({ children }) => {
 
   // Check user status when app opens
   useEffect(() => {
+    let unsubscribe;
     const checkAuthStatus = async () => {
       try {
         // Check guest mode first
@@ -29,7 +30,7 @@ export const AuthProvider = ({ children }) => {
         }
 
         // Firebase auth durumunu dinle
-        const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+          unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
           if (firebaseUser) {
             setUser(firebaseUser);
             setIsGuest(false);
@@ -39,14 +40,19 @@ export const AuthProvider = ({ children }) => {
           setLoading(false);
         });
 
-        return unsubscribe;
       } catch (error) {
         console.error('Auth check error:', error);
         setLoading(false);
       }
+
+      checkAuthStatus();
+
+        return ()=> {
+          if(typeof unsubscribe ==='function')
+                unsubscribe();
+        };
     };
 
-    checkAuthStatus();
   }, []);
 
   // Sign in with email

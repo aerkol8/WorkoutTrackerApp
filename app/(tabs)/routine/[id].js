@@ -294,130 +294,130 @@ export default function RoutineDetail() {
       
       
       <FlatList 
-  data={currentRoutine?.exercises || []}
-  keyExtractor={(item) => item.workoutId}
-  renderItem={({ item }) => (
-    <View style={styles.exerciseCard}>
-      {/* 1. BAŞLIK: Hareket İsmi ve Silme Butonu */}
-      <View style={styles.exerciseHeader}>
-        <Text style={styles.exerciseName}>
-          {/* İsmin geldiğinden emin oluyoruz, gelmezse ID basıyoruz ki nerede hata olduğunu görelim */}
-          {item.name ? item.name.toUpperCase() : `ID: ${item.workoutId.slice(-4)}`}
-        </Text>
-        <TouchableOpacity 
-          onPress={() => deleteExerciseFromRoutine(id, item.workoutId)}
-          style={{ padding: 5 }}
-        >
-          <Ionicons name="trash-outline" size={20} color="#CF6679" />
-        </TouchableOpacity>
-      </View>
+        data={currentRoutine?.exercises || []}
+        keyExtractor={(item) => item.workoutId}
+        renderItem={({ item }) => (
+          <View style={styles.exerciseCard}>
+            {/* 1. BAŞLIK: Hareket İsmi ve Silme Butonu */}
+            <View style={styles.exerciseHeader}>
+              <Text style={styles.exerciseName}>
+                {/* İsmin geldiğinden emin oluyoruz, gelmezse ID basıyoruz ki nerede hata olduğunu görelim */}
+                {item.name ? item.name.toUpperCase() : `ID: ${item.workoutId.slice(-4)}`}
+              </Text>
+              <TouchableOpacity 
+                onPress={() => deleteExerciseFromRoutine(id, item.workoutId)}
+                style={{ padding: 5 }}
+              >
+                <Ionicons name="trash-outline" size={20} color="#CF6679" />
+              </TouchableOpacity>
+            </View>
 
-      {/* 2. SET LIST*/}
-      {Array.isArray(item.sets) && item.sets.map((set, index) => {
-        const restSeconds = Number(set?.restSeconds ?? 0);
-        return (
-          <View key={set.id || index.toString()}>
-            {/* Set line*/}
-            <View 
-              style={[
-                styles.setRow, 
-                set.isDone && { backgroundColor: '#1b332b' }
-              ]}
+            {/* 2. SET LIST*/}
+            {Array.isArray(item.sets) && item.sets.map((set, index) => {
+              const restSeconds = Number(set?.restSeconds ?? 0);
+              return (
+                <View key={set.id || index.toString()}>
+                  {/* Set line*/}
+                  <View 
+                    style={[
+                      styles.setRow, 
+                      set.isDone && { backgroundColor: '#1b332b' }
+                    ]}
+                  >
+                    <Text style={styles.setNumber}>{index + 1}</Text>
+                    
+                    {/* weight */}
+                    <View style={styles.setInputGroup}>
+                      <TextInput
+                        style={styles.setInput}
+                        keyboardType="numeric"
+                        value={set.weight}
+                        placeholder="0"
+                        placeholderTextColor="#666"
+                        onChangeText={(val) => updateSetData(id, item.workoutId, index, 'weight', val)}
+                      />
+                      <Text style={styles.unitLabel}>kg</Text>
+                    </View>
+
+                    {/* Reps Input */}
+                    <View style={styles.setInputGroup}>
+                      <TextInput
+                        style={styles.setInput}
+                        keyboardType="numeric"
+                        value={set.reps}
+                        placeholder="0"
+                        placeholderTextColor="#666"
+                        onChangeText={(val) => updateSetData(id, item.workoutId, index, 'reps', val)}
+                      />
+                      <Text style={styles.unitLabel}>reps</Text>
+                    </View>
+
+                    {/* approve icon */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        if (!isActive) {
+                          alert('Press Start first to mark sets.');
+                          return;
+                        }
+                        if (isResting) return;
+
+                        const willBecomeDone = !set.isDone;
+                        toggleSetStatus(id, item.workoutId, index);
+                        if (willBecomeDone && restSeconds > 0) {
+                          startRest({ routineId: id, workoutId: item.workoutId, setIndex: index, seconds: restSeconds });
+                        }
+                      }}
+                      style={[styles.checkBtn, (!canMarkSets) && { opacity: 0.35 }]}
+                      disabled={!canMarkSets}
+                    >
+                      <Ionicons
+                        name={set.isDone ? 'checkmark-circle' : 'checkmark-circle-outline'}
+                        size={26}
+                        color={set.isDone ? '#03DAC6' : '#444'}
+                      />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Rest row - right below set */}
+                  <View style={styles.restRowInline}>
+                    <Ionicons name="time-outline" size={14} color="#666" />
+                    <Text style={styles.restLabelInline}>Rest:</Text>
+                    <Text style={styles.restValueInline}>{restSeconds > 0 ? `${restSeconds}s` : '-'}</Text>
+                    <TouchableOpacity
+                      style={styles.restBtnSmall}
+                      onPress={() => updateSetData(id, item.workoutId, index, 'restSeconds', String(restSeconds + 30))}
+                    >
+                      <Text style={styles.restBtnTextSmall}>+30</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.restBtnSmall}
+                      onPress={() => updateSetData(id, item.workoutId, index, 'restSeconds', String(restSeconds + 60))}
+                    >
+                      <Text style={styles.restBtnTextSmall}>+60</Text>
+                    </TouchableOpacity>
+                    {restSeconds > 0 && (
+                      <TouchableOpacity
+                        style={styles.restBtnSmall}
+                        onPress={() => updateSetData(id, item.workoutId, index, 'restSeconds', '0')}
+                      >
+                        <Ionicons name="close" size={14} color="#CF6679" />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+
+            {/* 3. adding sets*/}
+            <TouchableOpacity 
+              style={styles.addSetBtn} 
+              onPress={() => addNewSet(id, item.workoutId)}
             >
-              <Text style={styles.setNumber}>{index + 1}</Text>
-              
-              {/* weight */}
-              <View style={styles.setInputGroup}>
-                <TextInput
-                  style={styles.setInput}
-                  keyboardType="numeric"
-                  value={set.weight}
-                  placeholder="0"
-                  placeholderTextColor="#666"
-                  onChangeText={(val) => updateSetData(id, item.workoutId, index, 'weight', val)}
-                />
-                <Text style={styles.unitLabel}>kg</Text>
-              </View>
-
-              {/* Reps Input */}
-              <View style={styles.setInputGroup}>
-                <TextInput
-                  style={styles.setInput}
-                  keyboardType="numeric"
-                  value={set.reps}
-                  placeholder="0"
-                  placeholderTextColor="#666"
-                  onChangeText={(val) => updateSetData(id, item.workoutId, index, 'reps', val)}
-                />
-                <Text style={styles.unitLabel}>reps</Text>
-              </View>
-
-              {/* approve icon */}
-              <TouchableOpacity
-                onPress={() => {
-                  if (!isActive) {
-                    alert('Press Start first to mark sets.');
-                    return;
-                  }
-                  if (isResting) return;
-
-                  const willBecomeDone = !set.isDone;
-                  toggleSetStatus(id, item.workoutId, index);
-                  if (willBecomeDone && restSeconds > 0) {
-                    startRest({ routineId: id, workoutId: item.workoutId, setIndex: index, seconds: restSeconds });
-                  }
-                }}
-                style={[styles.checkBtn, (!canMarkSets) && { opacity: 0.35 }]}
-                disabled={!canMarkSets}
-              >
-                <Ionicons
-                  name={set.isDone ? 'checkmark-circle' : 'checkmark-circle-outline'}
-                  size={26}
-                  color={set.isDone ? '#03DAC6' : '#444'}
-                />
-              </TouchableOpacity>
-            </View>
-
-            {/* Rest row - right below set */}
-            <View style={styles.restRowInline}>
-              <Ionicons name="time-outline" size={14} color="#666" />
-              <Text style={styles.restLabelInline}>Rest:</Text>
-              <Text style={styles.restValueInline}>{restSeconds > 0 ? `${restSeconds}s` : '-'}</Text>
-              <TouchableOpacity
-                style={styles.restBtnSmall}
-                onPress={() => updateSetData(id, item.workoutId, index, 'restSeconds', String(restSeconds + 30))}
-              >
-                <Text style={styles.restBtnTextSmall}>+30</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.restBtnSmall}
-                onPress={() => updateSetData(id, item.workoutId, index, 'restSeconds', String(restSeconds + 60))}
-              >
-                <Text style={styles.restBtnTextSmall}>+60</Text>
-              </TouchableOpacity>
-              {restSeconds > 0 && (
-                <TouchableOpacity
-                  style={styles.restBtnSmall}
-                  onPress={() => updateSetData(id, item.workoutId, index, 'restSeconds', '0')}
-                >
-                  <Ionicons name="close" size={14} color="#CF6679" />
-                </TouchableOpacity>
-              )}
-            </View>
+              <Ionicons name="add" size={16} color="#BB86FC" />
+              <Text style={styles.addSetText}>ADD SET</Text>
+            </TouchableOpacity>
           </View>
-        );
-      })}
-
-      {/* 3. adding sets*/}
-      <TouchableOpacity 
-        style={styles.addSetBtn} 
-        onPress={() => addNewSet(id, item.workoutId)}
-      >
-        <Ionicons name="add" size={16} color="#BB86FC" />
-        <Text style={styles.addSetText}>ADD SET</Text>
-      </TouchableOpacity>
-    </View>
-  )}
+        )}
   // Empty list message
   ListEmptyComponent={() => (
     <Text style={{ color: '#666', textAlign: 'center', marginTop: 50 }}>

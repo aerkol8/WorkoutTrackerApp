@@ -67,6 +67,9 @@ export const styles = StyleSheet.create({
   // Meal Tabs
   mealTypeTabs: {
     maxHeight: 50,
+    height: 50,
+    minHeight: 50,
+    flexShrink: 0,
     marginBottom: 15,
   },
   mealTypeTabsContent: {

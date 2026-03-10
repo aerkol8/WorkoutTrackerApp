@@ -18,7 +18,7 @@ A comprehensive fitness tracking mobile application built with React Native and 
 
 ### 🏋️ Workout Tracking
 - **Custom Routines** - Create personalized workout routines (Push Day, Leg Day, etc.)
-- **Exercise Library** - Browse 1300+ exercises with muscle group filtering
+- **Exercise Library** - Browse a cached exercise catalog with muscle, equipment, and source metadata
 - **Live Workout Timer** - Track workout duration in real-time
 - **Set Tracking** - Log weight, reps, and mark sets as completed
 - **Rest Timer** - Configurable rest timer with push notifications
@@ -27,7 +27,7 @@ A comprehensive fitness tracking mobile application built with React Native and 
 - **Workout History** - Calendar view of all completed workouts
 
 ### 🥗 Nutrition Tracking
-- **Food Search** - Search foods via Nutritionix API integration
+- **Food Search** - Search foods via USDA FoodData Central with OpenFoodFacts fallback
 - **Macro Tracking** - Track calories, protein, carbs, and fat
 - **Meal Categories** - Organize meals by Breakfast, Lunch, Snack, Dinner
 - **Daily Goals** - Visual progress bars for macro targets
@@ -46,6 +46,7 @@ A comprehensive fitness tracking mobile application built with React Native and 
 - **Guest Mode** - Try the app without creating an account
 - **Cloud Sync** - Real-time data synchronization across devices
 - **Offline Support** - Local storage for guest users via AsyncStorage
+- **Backup Migration** - Export/import versioned JSON backups to preserve Expo Go guest data
 
 ## 🛠️ Tech Stack
 
@@ -126,12 +127,17 @@ WorkoutTrackerApp/
    EXPO_PUBLIC_FIREBASE_APP_ID=your_app_id
    ```
 
-4. **Start the development server**
+4. **Configure optional USDA proxy URL**
+   ```env
+   EXPO_PUBLIC_USDA_PROXY_URL=https://<your-region>-<project>.cloudfunctions.net/usdaProxy
+   ```
+
+5. **Start the development server**
    ```bash
    npx expo start
    ```
 
-5. **Run on device/emulator**
+6. **Run on device/emulator**
    - Scan QR code with Expo Go (iOS/Android)
    - Press `i` for iOS simulator
    - Press `a` for Android emulator
@@ -176,7 +182,7 @@ WorkoutTrackerApp/
 ### Tracking Nutrition
 1. Navigate to **Nutrition** tab
 2. Select a meal type (Breakfast, Lunch, etc.)
-3. Search for food or add custom meal
+3. Search for food or barcode, or add custom meal
 4. Track your daily macro progress
 
 ### Body Measurements
@@ -199,16 +205,18 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## � API Integration
+## API Integration
 
-- **Nutritionix API** - Food database search with macro information
+- **USDA FoodData Central** - Primary food search via Firebase proxy
+- **OpenFoodFacts API** - Global packaged-food and barcode fallback
+- **wger API** - Remote exercise catalog sync
 - **Firebase Firestore** - Real-time database for user data
 - **Firebase Authentication** - Secure user authentication
 - **Expo Notifications** - Push notifications for workout timers
 
 ## 🧮 Key Algorithms
 
-- **Brzycki Formula** - 1RM Estimation: `1RM = weight × (36 / (37 - reps))`
+- **Epley-style Formula** - 1RM Estimation: `1RM = weight × (1 + reps / 30)`
 - **US Navy Body Fat Formula** - Accurate body composition calculation
 - **PR Detection** - Automatic tracking of personal records
 

@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
 import { 
   View, Text, TouchableOpacity, StyleSheet, Alert, 
-  TextInput, Modal, ScrollView, KeyboardAvoidingView, Platform
+  TextInput, Modal, ScrollView, KeyboardAvoidingView, Platform, Share
 } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { useProfile } from '../../context/ProfileContext';
+import { useWorkout } from '../../context/WorkoutContext';
+import { useNutrition } from '../../context/NutritionContext';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { createBackupPayload, parseBackupString, serializeBackup } from '../../utils/backup';
 
 export default function ProfileScreen() {
   const { signOut, user, isGuest } = useAuth();
@@ -17,8 +20,12 @@ export default function ProfileScreen() {
     addMeasurement, 
     deleteMeasurement,
     getLatestMeasurement,
-    getBFPChange
+    getBFPChange,
+    exportBackupData: exportProfileData,
+    importBackupData: importProfileData
   } = useProfile();
+  const { exportBackupData: exportWorkoutData, importBackupData: importWorkoutData } = useWorkout();
+  const { exportBackupData: exportNutritionData, importBackupData: importNutritionData } = useNutrition();
   const router = useRouter();
 
   const [showMeasurementModal, setShowMeasurementModal] = useState(false);
@@ -28,6 +35,10 @@ export default function ProfileScreen() {
   const [hip, setHip] = useState('');
   const [tempHeight, setTempHeight] = useState(profile.height?.toString() || '');
   const [tempGender, setTempGender] = useState(profile.gender || 'male');
+  const [showBackupExportModal, setShowBackupExportModal] = useState(false);
+  const [showBackupImportModal, setShowBackupImportModal] = useState(false);
+  const [backupText, setBackupText] = useState('');
+  const [importText, setImportText] = useState('');
 
   const latestMeasurement = getLatestMeasurement();
   const bfpChange = getBFPChange();
@@ -122,6 +133,45 @@ export default function ProfileScreen() {
       if (bfp < 25) return { label: 'Fitness', color: '#45B7D1' };
       if (bfp < 32) return { label: 'Average', color: '#96CEB4' };
       return { label: 'Obese', color: '#CF6679' };
+    }
+  };
+
+  const handleExportBackup = async () => {
+    try {
+      const payload = createBackupPayload({
+        isGuest,
+        workout: exportWorkoutData(),
+        nutrition: exportNutritionData(),
+        profile: exportProfileData(),
+      });
+      const serialized = serializeBackup(payload);
+      setBackupText(serialized);
+      setShowBackupExportModal(true);
+    } catch (error) {
+      Alert.alert('Error', 'Backup export failed');
+    }
+  };
+
+  const handleShareBackup = async () => {
+    if (!backupText) return;
+    try {
+      await Share.share({ message: backupText });
+    } catch (error) {
+      Alert.alert('Error', 'Backup share failed');
+    }
+  };
+
+  const handleImportBackup = async () => {
+    try {
+      const parsed = parseBackupString(importText);
+      importWorkoutData(parsed.workout);
+      importNutritionData(parsed.nutrition);
+      importProfileData(parsed.profile);
+      setShowBackupImportModal(false);
+      setImportText('');
+      Alert.alert('Success', 'Backup imported. Your data is now active in this app.');
+    } catch (error) {
+      Alert.alert('Import Failed', error.message || 'The backup JSON is invalid.');
     }
   };
 
@@ -252,6 +302,32 @@ export default function ProfileScreen() {
             <Text style={styles.menuText}>Body Settings</Text>
             <Text style={styles.menuSubtext}>
               {profile.height ? `${profile.height}cm • ${profile.gender === 'male' ? 'Male' : 'Female'}` : 'Not set'}
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={24} color="#666" />
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>BACKUP</Text>
+
+        <TouchableOpacity style={styles.menuItem} onPress={handleExportBackup}>
+          <Ionicons name="download-outline" size={24} color="#4ECDC4" />
+          <View style={styles.menuTextContainer}>
+            <Text style={styles.menuText}>Export Backup</Text>
+            <Text style={styles.menuSubtext}>
+              Routines, nutrition and body data as versioned JSON
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={24} color="#666" />
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.menuItem} onPress={() => setShowBackupImportModal(true)}>
+          <Ionicons name="cloud-upload-outline" size={24} color="#FFB74D" />
+          <View style={styles.menuTextContainer}>
+            <Text style={styles.menuText}>Import Backup</Text>
+            <Text style={styles.menuSubtext}>
+              Paste an exported backup JSON and restore it here
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={24} color="#666" />
@@ -404,6 +480,66 @@ export default function ProfileScreen() {
               <Text style={styles.saveBtnText}>Save</Text>
             </TouchableOpacity>
           </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal visible={showBackupExportModal} animationType="slide" presentationStyle="pageSheet">
+        <KeyboardAvoidingView
+          style={styles.modalContainer}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Export Backup</Text>
+            <TouchableOpacity onPress={() => setShowBackupExportModal(false)}>
+              <Ionicons name="close-circle" size={32} color="#CF6679" />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.backupDescription}>
+            Share or save this JSON before moving away from Expo Go. It includes workout, nutrition and profile data.
+          </Text>
+
+          <TextInput
+            style={styles.backupTextArea}
+            multiline
+            editable={false}
+            value={backupText}
+          />
+
+          <TouchableOpacity style={styles.saveBtn} onPress={handleShareBackup}>
+            <Text style={styles.saveBtnText}>Share Backup JSON</Text>
+          </TouchableOpacity>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal visible={showBackupImportModal} animationType="slide" presentationStyle="pageSheet">
+        <KeyboardAvoidingView
+          style={styles.modalContainer}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Import Backup</Text>
+            <TouchableOpacity onPress={() => setShowBackupImportModal(false)}>
+              <Ionicons name="close-circle" size={32} color="#CF6679" />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.backupDescription}>
+            Paste a previously exported backup JSON. If you are signed in, imported data will sync to your account.
+          </Text>
+
+          <TextInput
+            style={styles.backupTextArea}
+            multiline
+            placeholder="Paste backup JSON here"
+            placeholderTextColor="#666"
+            value={importText}
+            onChangeText={setImportText}
+          />
+
+          <TouchableOpacity style={styles.saveBtn} onPress={handleImportBackup}>
+            <Text style={styles.saveBtnText}>Import Backup</Text>
+          </TouchableOpacity>
         </KeyboardAvoidingView>
       </Modal>
     </ScrollView>
@@ -736,5 +872,23 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 15,
     fontStyle: 'italic',
+  },
+  backupDescription: {
+    color: '#888',
+    fontSize: 13,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  backupTextArea: {
+    flex: 1,
+    backgroundColor: '#1E1E1E',
+    color: '#fff',
+    borderRadius: 12,
+    padding: 15,
+    borderWidth: 1,
+    borderColor: '#333',
+    textAlignVertical: 'top',
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
 });

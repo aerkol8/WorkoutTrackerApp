@@ -27,7 +27,13 @@
       "favicon": "./assets/fp.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow FullPot to use your camera to scan food barcodes."
+        }
+      ]
     ]
   }
 }

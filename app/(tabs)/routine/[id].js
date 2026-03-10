@@ -5,8 +5,7 @@ import { useWorkout } from '../../../context/WorkoutContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
-
-import exerciseData from '../../../data/exercises.json';
+import { toLocalDateKey } from '../../../utils/date';
 
 // Notification settings
 Notifications.setNotificationHandler({
@@ -25,6 +24,7 @@ export default function RoutineDetail() {
   const { 
     finishWorkout, 
     routines, 
+    library,
     addExerciseToSpecificRoutine, 
     deleteExerciseFromRoutine,
     addNewSet,
@@ -102,9 +102,10 @@ export default function RoutineDetail() {
 
   // --- SEARCH FILTER ---
   // We'll use this list while searching exercises in the modal
-  const filteredExercises = exerciseData.filter(ex => 
+  const filteredExercises = (library || []).filter(ex =>
     ex.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    ex.bodyPart.toLowerCase().includes(searchQuery.toLowerCase())
+    ex.bodyPart.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (ex.primaryMuscles || []).some(muscle => muscle.toLowerCase().includes(searchQuery.toLowerCase()))
   );
   const handleResetTimer = () => {
     setIsActive(false);
@@ -253,7 +254,7 @@ export default function RoutineDetail() {
       totalExercises: currentRoutine.exercises.length,
       exercises: currentRoutine.exercises,
       // Add to session object:
-      dateISO: new Date().toISOString().split('T')[0], // "2024-01-24"
+      dateISO: toLocalDateKey(new Date()), // "2024-01-24"
       dateString: new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' }), // "Wednesday January 24"
     };
 
@@ -485,7 +486,9 @@ export default function RoutineDetail() {
                   >
                       <View>
                         <Text style={{color: 'white', fontWeight: 'bold'}}>{item.name.toUpperCase()}</Text>
-                        <Text style={{color: '#888', fontSize: 12}}>{item.bodyPart}</Text>
+                        <Text style={{color: '#888', fontSize: 12}}>
+                          {item.bodyPart} • {(item.primaryMuscles || []).slice(0, 2).join(', ')}
+                        </Text>
                       </View>
                       <Ionicons name="add-circle" size={28} color="#BB86FC" />
                   </TouchableOpacity>
@@ -699,4 +702,3 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 });
-

@@ -1,22 +1,114 @@
-import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
+import React, { createContext, useState, useContext, useEffect, useRef, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import exerciseData from '../data/exercises.json';
+import exerciseCatalogSnapshot from '../data/exerciseCatalogSnapshot.json';
 import { useAuth } from './AuthContext';
+import {
+  buildSeedCatalog,
+  computeMuscleDashboard,
+  enrichWorkoutData,
+  fetchWgerCatalog,
+  getRecentPRs,
+  mergeCatalogs,
+} from '../utils/exerciseCatalog';
+import { EXERCISE_CACHE_TTL_MS, STORAGE_KEYS } from '../utils/storage';
+import { toLocalDateKey } from '../utils/date';
 
 const WorkoutContext = createContext(null);
+const seedCatalog = buildSeedCatalog(exerciseData);
+const snapshotCatalog = mergeCatalogs(seedCatalog, exerciseCatalogSnapshot);
 
 export const WorkoutProvider = ({ children }) => {
   const { user, isGuest } = useAuth();
   const [routines, setRoutines] = useState([]);
   const [history, setHistory] = useState([]);
-  const [library, setLibrary] = useState([]); // Exercise library state
-  const [dataLoaded, setDataLoaded] = useState(false); // Data loaded from source?
-  const [loadedUserId, setLoadedUserId] = useState(null); // Which user's data was loaded
-  const lastSavedRef = useRef(null); // Track last saved data to prevent duplicate saves
+  const [library, setLibrary] = useState(snapshotCatalog);
+  const [catalogMeta, setCatalogMeta] = useState({
+    source: 'snapshot',
+    syncedAt: null,
+    remoteAvailable: exerciseCatalogSnapshot.length > 0,
+    lastError: null,
+  });
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [loadedUserId, setLoadedUserId] = useState(null);
+  const lastSavedRef = useRef(null);
 
-  // Clear state when auth is completely signed out
+  const enrichData = (nextRoutines, nextHistory, catalog = library) => (
+    enrichWorkoutData({ routines: nextRoutines, history: nextHistory }, catalog)
+  );
+
+  const refreshExerciseCatalog = async (force = false) => {
+    try {
+      const cachedCatalog = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalog);
+      const cachedSyncedAt = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalogSyncedAt);
+      const parsedCache = cachedCatalog ? JSON.parse(cachedCatalog) : [];
+      const mergedCache = mergeCatalogs(snapshotCatalog, parsedCache);
+      const syncedAt = cachedSyncedAt || null;
+      const isStale = !syncedAt || (Date.now() - new Date(syncedAt).getTime()) > EXERCISE_CACHE_TTL_MS;
+
+      if (!cachedCatalog) {
+        await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(snapshotCatalog));
+      }
+
+      if (mergedCache.length) {
+        setLibrary(mergedCache);
+        setCatalogMeta({
+          source: parsedCache.length ? 'cache' : 'snapshot',
+          syncedAt,
+          remoteAvailable: mergedCache.some(item => item.source === 'wger'),
+          lastError: null,
+        });
+      }
+
+      const shouldFetchRemote = force || isStale || !parsedCache.length;
+      if (!shouldFetchRemote) {
+        return { success: true, fromCache: true };
+      }
+
+      const remoteCatalog = await fetchWgerCatalog();
+      if (!remoteCatalog.length) {
+        return { success: true, fromCache: true };
+      }
+      const mergedRemote = mergeCatalogs(snapshotCatalog, remoteCatalog);
+      const timestamp = new Date().toISOString();
+      await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(mergedRemote));
+      await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogSyncedAt, timestamp);
+      setLibrary(mergedRemote);
+      setCatalogMeta({
+        source: 'wger',
+        syncedAt: timestamp,
+        remoteAvailable: true,
+        lastError: null,
+      });
+      return { success: true, fromCache: false };
+    } catch (error) {
+      setCatalogMeta(prev => ({
+        ...prev,
+        lastError: error.message || 'Exercise catalog sync failed',
+      }));
+      return { success: false, error: error.message };
+    }
+  };
+
+  useEffect(() => {
+    refreshExerciseCatalog();
+  }, []);
+
+  useEffect(() => {
+    if (!library.length || (!routines.length && !history.length)) return;
+
+    const enriched = enrichData(routines, history, library);
+    const currentPayload = JSON.stringify({ routines, history });
+    const enrichedPayload = JSON.stringify(enriched);
+
+    if (currentPayload !== enrichedPayload) {
+      setRoutines(enriched.routines);
+      setHistory(enriched.history);
+    }
+  }, [library]);
+
   useEffect(() => {
     if (!user && !isGuest) {
       setRoutines([]);
@@ -26,11 +118,9 @@ export const WorkoutProvider = ({ children }) => {
     }
   }, [user, isGuest]);
 
-  // --- DATA LOADING (Firestore or AsyncStorage) ---
   useEffect(() => {
-    if (!user && !isGuest) return; // Wait if not logged in
+    if (!user && !isGuest) return;
 
-    // Clear state when user mode changes to prevent leaks
     setRoutines([]);
     setHistory([]);
     setDataLoaded(false);
@@ -41,49 +131,33 @@ export const WorkoutProvider = ({ children }) => {
     const loadData = async () => {
       try {
         if (isGuest) {
-          // GUEST MODE: Load from AsyncStorage
-          const storedRoutines = await AsyncStorage.getItem('@routines');
-          const storedHistory = await AsyncStorage.getItem('@history');
-
+          const storedRoutines = await AsyncStorage.getItem(STORAGE_KEYS.routines);
+          const storedHistory = await AsyncStorage.getItem(STORAGE_KEYS.history);
           const routinesData = storedRoutines ? JSON.parse(storedRoutines) : [];
           const historyData = storedHistory ? JSON.parse(storedHistory) : [];
+          const enriched = enrichData(routinesData, historyData, library);
 
-          setRoutines(routinesData);
-          setHistory(historyData);
-
+          setRoutines(enriched.routines);
+          setHistory(enriched.history);
           setLoadedUserId('guest');
           setDataLoaded(true);
-
-          lastSavedRef.current = JSON.stringify({ routines: routinesData, history: historyData });
+          lastSavedRef.current = JSON.stringify(enriched);
         } else if (user) {
-          // USER LOGGED IN: Load from Firestore (real-time)
           const userDocRef = doc(db, 'users', user.uid);
-          
           unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-            if (docSnap.exists()) {
-              const data = docSnap.data();
-              const routinesData = data.routines || [];
-              const historyData = data.history || [];
+            const routinesData = docSnap.exists() ? (docSnap.data().routines || []) : [];
+            const historyData = docSnap.exists() ? (docSnap.data().history || []) : [];
+            const enriched = enrichData(routinesData, historyData, library);
 
-              setRoutines(routinesData);
-              setHistory(historyData);
-
-              lastSavedRef.current = JSON.stringify({ routines: routinesData, history: historyData });
-            } else {
-              setRoutines([]);
-              setHistory([]);
-
-              lastSavedRef.current = JSON.stringify({ routines: [], history: [] });
-            }
+            setRoutines(enriched.routines);
+            setHistory(enriched.history);
+            lastSavedRef.current = JSON.stringify(enriched);
             setLoadedUserId(user.uid);
             setDataLoaded(true);
           });
         }
-
-        // Load exercises directly from JSON
-        setLibrary(exerciseData);
       } catch (e) {
-        console.error("Data could not be loaded:", e);
+        console.error('Data could not be loaded:', e);
       }
     };
 
@@ -92,16 +166,14 @@ export const WorkoutProvider = ({ children }) => {
     return () => {
       if (unsubscribe) unsubscribe();
     };
-  }, [user, isGuest]);
+  }, [user, isGuest, library]);
 
-  // --- DATA SAVING (Firestore or AsyncStorage) ---
   useEffect(() => {
-    // If user logged out, don't save anything
     if (!user && !isGuest) return;
-    if (!dataLoaded) return; // Don't save if not yet loaded from source
-    
+    if (!dataLoaded) return;
+
     const currentId = isGuest ? 'guest' : user?.uid;
-    if (!currentId || loadedUserId !== currentId) return; // Don't save with different user data
+    if (!currentId || loadedUserId !== currentId) return;
 
     const saveData = async () => {
       try {
@@ -109,149 +181,145 @@ export const WorkoutProvider = ({ children }) => {
         if (lastSavedRef.current === payloadStr) return;
 
         if (isGuest) {
-          // GUEST MODE: Save to AsyncStorage
-          await AsyncStorage.setItem('@routines', JSON.stringify(routines));
-          await AsyncStorage.setItem('@history', JSON.stringify(history));
-        } else if (user && user.uid) {
-          // USER LOGGED IN: Save to Firestore (user.uid check again)
+          await AsyncStorage.setItem(STORAGE_KEYS.routines, JSON.stringify(routines));
+          await AsyncStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history));
+        } else if (user?.uid) {
           const userDocRef = doc(db, 'users', user.uid);
           await setDoc(userDocRef, {
             routines,
             history,
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString(),
           }, { merge: true });
         }
 
         lastSavedRef.current = payloadStr;
       } catch (e) {
-        // Ignore permission errors silently (may happen during logout)
         if (e?.code === 'permission-denied' || e?.message?.includes('permission')) {
-          console.log("Logged out, save skipped");
           return;
         }
-        console.error("Veriler kaydedilemedi:", e);
+        console.error('Workout data could not be saved:', e);
       }
     };
 
     saveData();
   }, [routines, history, user, isGuest, dataLoaded, loadedUserId]);
 
-  // --- LIBRARY FUNCTIONS ---
-  // Library is loaded directly from data/exercises.json
+  const exportBackupData = () => ({
+    routines,
+    history,
+  });
 
-  // --- ROUTINE (WORKOUT DAY) FUNCTIONS ---
+  const importBackupData = (payload = {}) => {
+    const nextRoutines = Array.isArray(payload.routines) ? payload.routines : [];
+    const nextHistory = Array.isArray(payload.history) ? payload.history : [];
+    const enriched = enrichData(nextRoutines, nextHistory, library);
+
+    setRoutines(enriched.routines);
+    setHistory(enriched.history);
+    lastSavedRef.current = null;
+    setDataLoaded(true);
+    setLoadedUserId(isGuest ? 'guest' : user?.uid || loadedUserId);
+    return { success: true, routines: enriched.routines.length, history: enriched.history.length };
+  };
+
   const addRoutine = (name) => {
     const newRoutine = {
       id: Date.now().toString(),
-      name: name,
-      exercises: []
+      name,
+      exercises: [],
     };
-    setRoutines([...routines, newRoutine]);
+    setRoutines(prev => [...prev, newRoutine]);
   };
 
   const deleteRoutine = (routineId) => {
-    setRoutines((prev) => prev.filter((r) => r.id !== routineId));
+    setRoutines(prev => prev.filter(routine => routine.id !== routineId));
   };
 
   const addExerciseToSpecificRoutine = (routineId, exercise) => {
     setRoutines(prevRoutines => prevRoutines.map(routine => {
-      if (routine.id === routineId) {
-        return {
-          ...routine,
-          exercises: [
-            ...routine.exercises, 
-            { 
-              ...exercise, 
-              workoutId: Date.now().toString(),
-              sets: [{ id: Date.now(), weight: "0", reps: "10", isDone: false, restSeconds: 0 }] 
-            }
-          ]
-        };
-      }
-      return routine;
+      if (routine.id !== routineId) return routine;
+
+      return {
+        ...routine,
+        exercises: [
+          ...routine.exercises,
+          {
+            ...exercise,
+            workoutId: Date.now().toString(),
+            sets: [{ id: Date.now(), weight: '0', reps: '10', isDone: false, restSeconds: 0 }],
+          },
+        ],
+      };
     }));
   };
 
   const deleteExerciseFromRoutine = (routineId, workoutId) => {
-    setRoutines(prevRoutines => prevRoutines.map(routine => {
-      if (routine.id === routineId) {
-        return {
-          ...routine,
-          exercises: routine.exercises.filter(ex => ex.workoutId !== workoutId)
-        };
-      }
-      return routine;
-    }));
+    setRoutines(prevRoutines => prevRoutines.map(routine => (
+      routine.id === routineId
+        ? { ...routine, exercises: routine.exercises.filter(exercise => exercise.workoutId !== workoutId) }
+        : routine
+    )));
   };
 
-  // --- SET MANAGEMENT ---
   const updateSetData = (routineId, workoutId, setIndex, field, value) => {
     setRoutines(prevRoutines => prevRoutines.map(routine => {
-      if (routine.id === routineId) {
-        return {
-          ...routine,
-          exercises: routine.exercises.map(ex => {
-            if (ex.workoutId === workoutId) {
-              const newSets = [...ex.sets];
-              newSets[setIndex] = { ...newSets[setIndex], [field]: value };
-              return { ...ex, sets: newSets };
-            }
-            return ex;
-          })
-        };
-      }
-      return routine;
+      if (routine.id !== routineId) return routine;
+
+      return {
+        ...routine,
+        exercises: routine.exercises.map(exercise => {
+          if (exercise.workoutId !== workoutId) return exercise;
+          const nextSets = [...exercise.sets];
+          nextSets[setIndex] = { ...nextSets[setIndex], [field]: value };
+          return { ...exercise, sets: nextSets };
+        }),
+      };
     }));
   };
 
   const addNewSet = (routineId, workoutId) => {
     setRoutines(prevRoutines => prevRoutines.map(routine => {
-      if (routine.id === routineId) {
-        return {
-          ...routine,
-          exercises: routine.exercises.map(ex => {
-            if (ex.workoutId === workoutId) {
-              const lastSet = ex.sets[ex.sets.length - 1];
-              return {
-                ...ex,
-                sets: [...ex.sets, { 
-                  id: Date.now(), 
-                  weight: lastSet?.weight || "0", 
-                  reps: lastSet?.reps || "10", 
-                  isDone: false,
-                  restSeconds: lastSet?.restSeconds ?? 0,
-                }]
-              };
-            }
-            return ex;
-          })
-        };
-      }
-      return routine;
+      if (routine.id !== routineId) return routine;
+
+      return {
+        ...routine,
+        exercises: routine.exercises.map(exercise => {
+          if (exercise.workoutId !== workoutId) return exercise;
+          const lastSet = exercise.sets[exercise.sets.length - 1];
+          return {
+            ...exercise,
+            sets: [
+              ...exercise.sets,
+              {
+                id: Date.now(),
+                weight: lastSet?.weight || '0',
+                reps: lastSet?.reps || '10',
+                isDone: false,
+                restSeconds: lastSet?.restSeconds ?? 0,
+              },
+            ],
+          };
+        }),
+      };
     }));
   };
 
   const toggleSetStatus = (routineId, workoutId, setIndex) => {
     setRoutines(prevRoutines => prevRoutines.map(routine => {
-      if (routine.id === routineId) {
-        return {
-          ...routine,
-          exercises: routine.exercises.map(ex => {
-            if (ex.workoutId === workoutId) {
-              const newSets = [...ex.sets];
-              newSets[setIndex] = { ...newSets[setIndex], isDone: !newSets[setIndex].isDone };
-              return { ...ex, sets: newSets };
-            }
-            return ex;
-          })
-        };
-      }
-      return routine;
+      if (routine.id !== routineId) return routine;
+
+      return {
+        ...routine,
+        exercises: routine.exercises.map(exercise => {
+          if (exercise.workoutId !== workoutId) return exercise;
+          const nextSets = [...exercise.sets];
+          nextSets[setIndex] = { ...nextSets[setIndex], isDone: !nextSets[setIndex].isDone };
+          return { ...exercise, sets: nextSets };
+        }),
+      };
     }));
   };
 
-  // --- 1RM CALCULATION ---
-  // Formula: 1RM = Weight × (1 + Reps / 30)
   const calculate1RM = (weight, reps) => {
     const w = parseFloat(weight) || 0;
     const r = parseFloat(reps) || 0;
@@ -259,63 +327,62 @@ export const WorkoutProvider = ({ children }) => {
     return Math.round(w * (1 + r / 30));
   };
 
-  // Find the best 1RM in all history for an exercise
-  const getExerciseBest1RM = (exerciseName, excludeEntryId = null) => {
+  const getExerciseBest1RM = (exerciseIdentifier, excludeEntryId = null) => {
     let best1RM = 0;
     history.forEach(entry => {
       if (excludeEntryId && entry.id === excludeEntryId) return;
-      entry.exercises?.forEach(ex => {
-        if (ex.name?.toLowerCase() === exerciseName?.toLowerCase()) {
-          ex.sets?.forEach(set => {
-            const rm = calculate1RM(set.weight, set.reps);
-            if (rm > best1RM) best1RM = rm;
-          });
-        }
+      entry.exercises?.forEach(exercise => {
+        const isSameExercise = exercise.catalogExerciseId
+          ? exercise.catalogExerciseId === exerciseIdentifier
+          : exercise.name?.toLowerCase() === String(exerciseIdentifier).toLowerCase();
+        if (!isSameExercise) return;
+
+        exercise.sets?.forEach(set => {
+          const rm = calculate1RM(set.weight, set.reps);
+          if (rm > best1RM) best1RM = rm;
+        });
       });
     });
     return best1RM;
   };
 
-  // --- GEÇMİŞ YÖNETİMİ ---
   const finishWorkout = (sessionData) => {
-    // Her egzersiz için PR kontrolü yap
-    const exercisesWithPR = sessionData.exercises.map(ex => {
+    const enrichedSession = enrichData([], [{ exercises: sessionData.exercises }], library).history[0];
+
+    const exercisesWithPR = (enrichedSession?.exercises || []).map(exercise => {
       let best1RM = 0;
-      let bestSet = null;
-      
-      // Bu egzersizin bu antrenmandaki en iyi 1RM'ini bul
-      ex.sets?.forEach((set, idx) => {
+
+      exercise.sets?.forEach(set => {
         const rm = calculate1RM(set.weight, set.reps);
-        if (rm > best1RM) {
-          best1RM = rm;
-          bestSet = idx;
-        }
+        if (rm > best1RM) best1RM = rm;
       });
 
-      // Geçmişteki en iyi 1RM'i bul
-      const previousBest = getExerciseBest1RM(ex.name);
+      const exerciseIdentifier = exercise.catalogExerciseId || exercise.name;
+      const previousBest = getExerciseBest1RM(exerciseIdentifier);
       const isPR = best1RM > previousBest && best1RM > 0;
 
       return {
-        ...ex,
+        ...exercise,
         best1RM,
         previousBest,
         isPR,
       };
     });
 
-    const prCount = exercisesWithPR.filter(ex => ex.isPR).length;
-
+    const prCount = exercisesWithPR.filter(exercise => exercise.isPR).length;
     const newEntry = {
       ...sessionData,
       exercises: exercisesWithPR,
       prCount,
       id: Date.now().toString(),
-      dateISO: new Date().toISOString().split('T')[0],
-      dateString: new Date().toLocaleDateString('en-US', { 
-          weekday: 'long', day: 'numeric', month: 'long' 
-      })
+      dateISO: toLocalDateKey(new Date()),
+      dateString: new Date().toLocaleDateString('en-US', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+      }),
     };
+
     setHistory(prev => [newEntry, ...prev]);
   };
 
@@ -324,37 +391,47 @@ export const WorkoutProvider = ({ children }) => {
   };
 
   const resetRoutineProgress = (routineId) => {
-    setRoutines((prevRoutines) =>
-      prevRoutines.map((routine) => {
-        if (routine.id !== routineId) return routine;
-        return {
-          ...routine,
-          exercises: (routine.exercises || []).map((ex) => ({
-            ...ex,
-            sets: (ex.sets || []).map((s) => ({ ...s, isDone: false })),
-          })),
-        };
-      })
-    );
+    setRoutines(prevRoutines => prevRoutines.map(routine => (
+      routine.id !== routineId
+        ? routine
+        : {
+            ...routine,
+            exercises: (routine.exercises || []).map(exercise => ({
+              ...exercise,
+              sets: (exercise.sets || []).map(set => ({ ...set, isDone: false })),
+            })),
+          }
+    )));
   };
 
+  const dashboard7 = useMemo(() => computeMuscleDashboard(history, 7, library), [history, library]);
+  const dashboard30 = useMemo(() => computeMuscleDashboard(history, 30, library), [history, library]);
+  const recentPRs = useMemo(() => getRecentPRs(history), [history]);
+
   return (
-    <WorkoutContext.Provider value={{ 
-      routines, 
-      history, 
-      library, // Kütüphane listesini dışarı veriyoruz
-      addRoutine, 
+    <WorkoutContext.Provider value={{
+      routines,
+      history,
+      library,
+      catalogMeta,
+      addRoutine,
       deleteRoutine,
-      addExerciseToSpecificRoutine, 
-      deleteExerciseFromRoutine, 
-      finishWorkout, 
+      addExerciseToSpecificRoutine,
+      deleteExerciseFromRoutine,
+      finishWorkout,
       addNewSet,
       updateSetData,
       toggleSetStatus,
       deleteHistoryEntry,
       resetRoutineProgress,
       calculate1RM,
-      getExerciseBest1RM
+      getExerciseBest1RM,
+      refreshExerciseCatalog,
+      exportBackupData,
+      importBackupData,
+      dashboard7,
+      dashboard30,
+      recentPRs,
     }}>
       {children}
     </WorkoutContext.Provider>

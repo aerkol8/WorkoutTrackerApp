@@ -42,13 +42,18 @@ export default function RoutineDetail() {
 
   // Rest timer (between sets)
   const [restState, setRestState] = useState(null);
-  const restStartTimeRef = useRef(null); // Rest start time
-  const restDurationRef = useRef(0); // Total rest duration
   const workoutStartTimeRef = useRef(null); // Workout start time
   const appState = useRef(AppState.currentState);
   const notificationIdRef = useRef(null);
 
   const currentRoutine = routines.find(r => r.id === id);
+
+  const getRemainingRestSeconds = (state = restState) => {
+    if (!state?.isRunning) return 0;
+    const endsAt = Number(state.endsAt || 0);
+    if (!endsAt) return Math.max(0, Number(state.remainingSeconds || 0));
+    return Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+  };
 
   // Request notification permissions
   useEffect(() => {
@@ -64,6 +69,16 @@ export default function RoutineDetail() {
   // Update timer when app returns from background
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextAppState => {
+      const cameToForeground = appState.current !== 'active' && nextAppState === 'active';
+      const movedToBackground = nextAppState === 'background';
+
+      if (movedToBackground && restState?.isRunning) {
+        const remaining = getRemainingRestSeconds(restState);
+        if (remaining > 0) {
+          scheduleRestNotification(remaining);
+        }
+      }
+
       if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
         // App came to foreground
         
@@ -74,26 +89,33 @@ export default function RoutineDetail() {
         }
         
         // Update rest duration
-        if (restStartTimeRef.current && restState?.isRunning) {
-          const elapsed = Math.floor((Date.now() - restStartTimeRef.current) / 1000);
-          const remaining = Math.max(0, restDurationRef.current - elapsed);
+        if (restState?.isRunning) {
+          cancelRestNotification();
+          const remaining = getRemainingRestSeconds(restState);
           
           if (remaining <= 0) {
             // Time expired
             setRestState(null);
             Vibration.vibrate(200);
-            restStartTimeRef.current = null;
           } else {
             // Update remaining time
             setRestState(prev => prev ? { ...prev, remainingSeconds: remaining } : null);
           }
         }
       }
+
+      if (!cameToForeground && !movedToBackground && restState?.isRunning) {
+        const remaining = getRemainingRestSeconds(restState);
+        setRestState(prev => {
+          if (!prev?.isRunning || prev.remainingSeconds === remaining) return prev;
+          return { ...prev, remainingSeconds: remaining };
+        });
+      }
       appState.current = nextAppState;
     });
 
     return () => subscription.remove();
-  }, [restState?.isRunning, isActive]);
+  }, [restState?.isRunning, restState?.endsAt, isActive]);
 
   // --- MODAL OPEN (Callback function) ---
   const openModal = () => {
@@ -134,23 +156,24 @@ export default function RoutineDetail() {
   // --- REST COUNTDOWN ---
   useEffect(() => {
     if (!restState?.isRunning) return;
-    if (restState.remainingSeconds <= 0) {
-      cancelRestNotification(); 
-      restStartTimeRef.current = null;
-      setRestState(null);
-      Vibration.vibrate(200);
-      return;
-    }
-
-    const t = setTimeout(() => {
-      setRestState((prev) => {
-        if (!prev?.isRunning) return prev;
-        return { ...prev, remainingSeconds: Math.max(0, prev.remainingSeconds - 1) };
+    const tick = () => {
+      const remaining = getRemainingRestSeconds(restState);
+      if (remaining <= 0) {
+        cancelRestNotification();
+        setRestState(null);
+        Vibration.vibrate(200);
+        return;
+      }
+      setRestState(prev => {
+        if (!prev?.isRunning || prev.remainingSeconds === remaining) return prev;
+        return { ...prev, remainingSeconds: remaining };
       });
-    }, 1000);
+    };
 
-    return () => clearTimeout(t);
-  }, [restState?.isRunning, restState?.remainingSeconds]);
+    tick();
+    const intervalId = setInterval(tick, 250);
+    return () => clearInterval(intervalId);
+  }, [restState?.isRunning, restState?.endsAt]);
 
   const formatCountdown = (totalSecs) => {
     const mins = Math.floor(totalSecs / 60);
@@ -165,6 +188,8 @@ export default function RoutineDetail() {
       if (notificationIdRef.current) {
         await Notifications.cancelScheduledNotificationAsync(notificationIdRef.current);
       }
+
+      const safeDelaySeconds = Math.max(1, Math.ceil(Number(restSeconds) || 0));
       
       const id = await Notifications.scheduleNotificationAsync({
         content: {
@@ -173,7 +198,7 @@ export default function RoutineDetail() {
           sound: true,
         },
         trigger: {
-          seconds: restSeconds,
+          seconds: safeDelaySeconds,
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
         },
       });
@@ -197,19 +222,21 @@ export default function RoutineDetail() {
 
   const startRest = async ({ routineId, workoutId, setIndex, seconds: restSeconds }) => {
     if (!restSeconds || restSeconds <= 0) return;
-    
-    // Record start time
-    restStartTimeRef.current = Date.now();
-    restDurationRef.current = restSeconds;
-    
-    // Bildirim planla
-    await scheduleRestNotification(restSeconds);
+
+    const durationSeconds = Math.max(1, Math.ceil(Number(restSeconds) || 0));
+    const endsAt = Date.now() + durationSeconds * 1000;
+
+    await cancelRestNotification();
+    if (appState.current === 'background') {
+      await scheduleRestNotification(durationSeconds);
+    }
     
     setRestState({
       routineId,
       workoutId,
       setIndex,
-      remainingSeconds: restSeconds,
+      remainingSeconds: durationSeconds,
+      endsAt,
       isRunning: true,
     });
   };
@@ -217,9 +244,14 @@ export default function RoutineDetail() {
   // Cancel rest notification when rest is canceled
   const cancelRest = async () => {
     await cancelRestNotification();
-    restStartTimeRef.current = null;
     setRestState(null);
   };
+
+  useEffect(() => {
+    return () => {
+      cancelRestNotification();
+    };
+  }, []);
 
   const isResting = Boolean(restState?.isRunning);
   const canMarkSets = isActive && !isResting;
@@ -260,6 +292,7 @@ export default function RoutineDetail() {
 
     finishWorkout(session);
     resetRoutineProgress(id);
+    cancelRestNotification();
     setIsActive(false);
     setSeconds(0);
     setRestState(null);

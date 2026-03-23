@@ -164,12 +164,35 @@ export default function ProfileScreen() {
   const handleImportBackup = async () => {
     try {
       const parsed = parseBackupString(importText);
-      importWorkoutData(parsed.workout);
-      importNutritionData(parsed.nutrition);
-      importProfileData(parsed.profile);
-      setShowBackupImportModal(false);
-      setImportText('');
-      Alert.alert('Success', 'Backup imported. Your data is now active in this app.');
+      const workoutRoutines = parsed.workout?.routines?.length || 0;
+      const workoutHistory = parsed.workout?.history?.length || 0;
+      const workoutAliases = Object.keys(parsed.workout?.exerciseAliases || {}).length;
+      const nutritionDays = Object.keys(parsed.nutrition?.dailyMeals || {}).length;
+      const nutritionFavorites = parsed.nutrition?.favoriteFoods?.length || 0;
+      const nutritionTemplates = parsed.nutrition?.mealTemplates?.length || 0;
+      const profileMeasurements = parsed.profile?.measurements?.length || 0;
+      const exportedDateText = parsed.exportedAt
+        ? new Date(parsed.exportedAt).toLocaleString('en-US')
+        : 'Unknown';
+
+      Alert.alert(
+        'Import Backup',
+        `This will replace active local state with backup data.\n\nExported: ${exportedDateText}\nAuth mode: ${parsed.authMode}\n\nWorkout: ${workoutRoutines} routines, ${workoutHistory} history, ${workoutAliases} mappings\nNutrition: ${nutritionDays} logged days, ${nutritionFavorites} favorites, ${nutritionTemplates} templates\nProfile: ${profileMeasurements} measurements`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Import',
+            onPress: () => {
+              importWorkoutData(parsed.workout);
+              importNutritionData(parsed.nutrition);
+              importProfileData(parsed.profile);
+              setShowBackupImportModal(false);
+              setImportText('');
+              Alert.alert('Success', 'Backup imported. Your data is now active in this app.');
+            },
+          },
+        ]
+      );
     } catch (error) {
       Alert.alert('Import Failed', error.message || 'The backup JSON is invalid.');
     }

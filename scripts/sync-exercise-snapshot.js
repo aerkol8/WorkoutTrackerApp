@@ -60,6 +60,22 @@ function resolveReferenceNames(values = [], lookup = new Map()) {
   }));
 }
 
+function extractMediaUrl(mediaItem = {}) {
+  const candidateValues = [
+    mediaItem?.image,
+    mediaItem?.image_url,
+    mediaItem?.url,
+    mediaItem?.video,
+    mediaItem?.video_url,
+    mediaItem?.file,
+    mediaItem?.file_url,
+    mediaItem?.thumbnail,
+  ];
+
+  const resolved = candidateValues.find(value => typeof value === 'string' && value.trim());
+  return resolved ? resolved.trim() : null;
+}
+
 function normalizeWgerExercise(item = {}, referenceMaps = {}) {
   const sourceId = String(
     item.exercise_base ||
@@ -95,8 +111,8 @@ function normalizeWgerExercise(item = {}, referenceMaps = {}) {
     primaryMuscles,
     secondaryMuscles,
     equipment,
-    images: (baseImages || []).map(image => image.image || image.url || image).filter(Boolean),
-    videos: (baseVideos || []).map(video => video.video || video.url || video).filter(Boolean),
+    images: uniqueValues((baseImages || []).map(mediaItem => extractMediaUrl(mediaItem)).filter(Boolean)),
+    videos: uniqueValues((baseVideos || []).map(mediaItem => extractMediaUrl(mediaItem)).filter(Boolean)),
     source: 'wger',
   };
 }
@@ -142,14 +158,25 @@ async function fetchMediaMap(url, keyCandidates = ['exercise_base', 'exercise'])
   try {
     const rows = await fetchPaginated(url);
     const mediaMap = new Map();
+    const fallbackNestedKeys = ['id', 'exercise_base', 'exercise', 'exercise_id', 'exercise_base_id', 'exerciseBase', 'exerciseId'];
     rows.forEach(item => {
-      const key = keyCandidates.map(candidate => item?.[candidate]).find(Boolean);
+      const key = keyCandidates
+        .map(candidate => item?.[candidate])
+        .map(value => {
+          if (value === undefined || value === null || value === '') return null;
+          if (typeof value === 'object') {
+            const nested = fallbackNestedKeys.map(nestedKey => value?.[nestedKey]).find(Boolean);
+            return nested ? String(nested) : null;
+          }
+          return String(value);
+        })
+        .find(Boolean);
       if (!key) return;
       const normalizedKey = String(key);
       const list = mediaMap.get(normalizedKey) || [];
-      const mediaUrl = item.image || item.url || item.video;
+      const mediaUrl = extractMediaUrl(item);
       if (mediaUrl) list.push(mediaUrl);
-      mediaMap.set(normalizedKey, list);
+      mediaMap.set(normalizedKey, uniqueValues(list));
     });
     return mediaMap;
   } catch (error) {
@@ -162,8 +189,8 @@ async function fetchWgerCatalog() {
     fetchReferenceMap('https://wger.de/api/v2/muscle/?limit=200', item => item.name_en || item.common_name || item.name),
     fetchReferenceMap('https://wger.de/api/v2/equipment/?limit=200', item => item.name),
     fetchReferenceMap('https://wger.de/api/v2/exercisecategory/?limit=200', item => item.name),
-    fetchMediaMap('https://wger.de/api/v2/exerciseimage/?limit=200'),
-    fetchMediaMap('https://wger.de/api/v2/exercisevideo/?limit=200'),
+    fetchMediaMap('https://wger.de/api/v2/exerciseimage/?limit=200', ['exercise_base', 'exercise', 'exercise_base_id', 'exercise_id']),
+    fetchMediaMap('https://wger.de/api/v2/exercisevideo/?limit=200', ['exercise_base', 'exercise', 'exercise_base_id', 'exercise_id']),
   ]);
 
   const referenceMaps = { muscles, equipment, categories, images, videos };

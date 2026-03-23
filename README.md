@@ -129,8 +129,14 @@ WorkoutTrackerApp/
 
 4. **Configure optional USDA proxy URL**
    ```env
-   EXPO_PUBLIC_USDA_PROXY_URL=https://<your-region>-<project>.cloudfunctions.net/usdaProxy
+   EXPO_PUBLIC_USDA_PROXY_URL=https://<your-worker-subdomain>.workers.dev
    ```
+   - Any serverless proxy works (Cloudflare Workers, Vercel Functions, Render, Firebase Functions, etc.)
+   - If this variable is missing, the app continues with OpenFoodFacts-only mode
+
+   Quick Cloudflare Worker option:
+   - Worker template: [`workers/usda-proxy/worker.js`](workers/usda-proxy/worker.js)
+   - Deploy steps: [`workers/usda-proxy/README.md`](workers/usda-proxy/README.md)
 
 5. **Start the development server**
    ```bash
@@ -185,6 +191,11 @@ WorkoutTrackerApp/
 3. Search for food or barcode, or add custom meal
 4. Track your daily macro progress
 
+### Migration QA
+
+- Manual migration validation checklist:
+  [`docs/MIGRATION_QA_CHECKLIST.md`](docs/MIGRATION_QA_CHECKLIST.md)
+
 ### Body Measurements
 1. Go to **Profile** tab
 2. Set your height and gender in Settings
@@ -207,7 +218,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## API Integration
 
-- **USDA FoodData Central** - Primary food search via Firebase proxy
+- **USDA FoodData Central** - Primary text search via optional proxy URL (Cloudflare Worker template included)
 - **OpenFoodFacts API** - Global packaged-food and barcode fallback
 - **wger API** - Remote exercise catalog sync
 - **Firebase Firestore** - Real-time database for user data

@@ -12,7 +12,10 @@ export const STORAGE_KEYS = {
   measurements: '@measurements',
   exerciseCatalog: '@exercise_catalog_cache',
   exerciseCatalogSyncedAt: '@exercise_catalog_synced_at',
+  exerciseCatalogVersion: '@exercise_catalog_cache_version',
+  exerciseAliases: '@exercise_aliases',
 };
 
 export const BACKUP_VERSION = 1;
 export const EXERCISE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+export const EXERCISE_CATALOG_CACHE_VERSION = 2;

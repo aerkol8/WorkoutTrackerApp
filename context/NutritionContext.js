@@ -6,13 +6,18 @@ import { useAuth } from './AuthContext';
 import { STORAGE_KEYS } from '../utils/storage';
 import { toLocalDateKey } from '../utils/date';
 import {
+  dedupeFoods,
   isBarcodeQuery,
+  rankHybridFoodResults,
   rankOpenFoodFactsResults,
   searchOpenFoodFacts,
+  searchUsdaProxy,
 } from '../utils/nutritionSearch';
 
 const NutritionContext = createContext(null);
 const defaultDailyGoals = { calories: 2200, protein: 160, carbs: 220, fat: 70 };
+const USDA_PROXY_URL = String(process.env.EXPO_PUBLIC_USDA_PROXY_URL || '').trim();
+const PRIMARY_MIN_RESULTS = 6;
 
 function parsePortionGrams(portionValue) {
   const normalized = String(portionValue || '').trim().toLowerCase().replace(',', '.');
@@ -508,9 +513,42 @@ export const NutritionProvider = ({ children }) => {
       return cached.results;
     }
 
+    const hasUsdaProxy = Boolean(USDA_PROXY_URL);
+
     try {
-      const rawResults = await searchOpenFoodFacts(normalizedQuery, { barcode });
-      const results = rankOpenFoodFactsResults(rawResults, normalizedQuery);
+      let primaryResults = [];
+      let fallbackResults = [];
+
+      if (barcode) {
+        const offResults = await searchOpenFoodFacts(normalizedQuery, { barcode: true });
+        primaryResults = rankOpenFoodFactsResults(offResults, normalizedQuery);
+
+        if (hasUsdaProxy && primaryResults.length < 2) {
+          try {
+            fallbackResults = await searchUsdaProxy(normalizedQuery, USDA_PROXY_URL, { barcode: true });
+          } catch (error) {
+            fallbackResults = [];
+          }
+        }
+      } else {
+        if (hasUsdaProxy) {
+          try {
+            primaryResults = await searchUsdaProxy(normalizedQuery, USDA_PROXY_URL, { barcode: false });
+          } catch (error) {
+            primaryResults = [];
+          }
+        }
+
+        if (!hasUsdaProxy || primaryResults.length < PRIMARY_MIN_RESULTS) {
+          fallbackResults = await searchOpenFoodFacts(normalizedQuery, { barcode: false });
+        }
+      }
+
+      const results = rankHybridFoodResults(
+        dedupeFoods([...(primaryResults || []), ...(fallbackResults || [])]),
+        normalizedQuery,
+        { barcode }
+      );
       searchCacheRef.current.set(cacheKey, { results, timestamp: Date.now() });
       rememberSearch(normalizedQuery);
       return results;

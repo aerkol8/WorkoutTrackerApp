@@ -12,18 +12,21 @@ import {
   fetchWgerCatalog,
   getRecentPRs,
   mergeCatalogs,
+  normalizeExerciseName,
 } from '../utils/exerciseCatalog';
-import { EXERCISE_CACHE_TTL_MS, STORAGE_KEYS } from '../utils/storage';
+import { EXERCISE_CACHE_TTL_MS, EXERCISE_CATALOG_CACHE_VERSION, STORAGE_KEYS } from '../utils/storage';
 import { toLocalDateKey } from '../utils/date';
 
 const WorkoutContext = createContext(null);
 const seedCatalog = buildSeedCatalog(exerciseData);
 const snapshotCatalog = mergeCatalogs(seedCatalog, exerciseCatalogSnapshot);
+const MANUAL_CATALOG_REFRESH_COOLDOWN_MS = 30 * 1000;
 
 export const WorkoutProvider = ({ children }) => {
   const { user, isGuest } = useAuth();
   const [routines, setRoutines] = useState([]);
   const [history, setHistory] = useState([]);
+  const [exerciseAliases, setExerciseAliases] = useState({});
   const [library, setLibrary] = useState(snapshotCatalog);
   const [catalogMeta, setCatalogMeta] = useState({
     source: 'snapshot',
@@ -34,62 +37,119 @@ export const WorkoutProvider = ({ children }) => {
   const [dataLoaded, setDataLoaded] = useState(false);
   const [loadedUserId, setLoadedUserId] = useState(null);
   const lastSavedRef = useRef(null);
+  const catalogRefreshInFlightRef = useRef(null);
+  const lastManualCatalogRefreshAtRef = useRef(0);
 
-  const enrichData = (nextRoutines, nextHistory, catalog = library) => (
-    enrichWorkoutData({ routines: nextRoutines, history: nextHistory }, catalog)
+  const sanitizeAliasMap = (rawValue = {}) => {
+    if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
+      return {};
+    }
+
+    return Object.entries(rawValue).reduce((acc, [legacyName, canonicalName]) => {
+      const normalizedLegacy = normalizeExerciseName(legacyName);
+      const canonicalText = String(canonicalName || '').trim();
+      if (!normalizedLegacy || !canonicalText) return acc;
+      acc[normalizedLegacy] = canonicalText;
+      return acc;
+    }, {});
+  };
+
+  const enrichData = (nextRoutines, nextHistory, catalog = library, aliases = exerciseAliases) => (
+    enrichWorkoutData(
+      { routines: nextRoutines, history: nextHistory },
+      catalog,
+      { customAliases: aliases }
+    )
   );
 
   const refreshExerciseCatalog = async (force = false) => {
-    try {
-      const cachedCatalog = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalog);
-      const cachedSyncedAt = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalogSyncedAt);
-      const parsedCache = cachedCatalog ? JSON.parse(cachedCatalog) : [];
-      const mergedCache = mergeCatalogs(snapshotCatalog, parsedCache);
-      const syncedAt = cachedSyncedAt || null;
-      const isStale = !syncedAt || (Date.now() - new Date(syncedAt).getTime()) > EXERCISE_CACHE_TTL_MS;
+    if (catalogRefreshInFlightRef.current) {
+      return catalogRefreshInFlightRef.current;
+    }
 
-      if (!cachedCatalog) {
-        await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(snapshotCatalog));
-      }
+    const now = Date.now();
+    if (force && (now - lastManualCatalogRefreshAtRef.current) < MANUAL_CATALOG_REFRESH_COOLDOWN_MS) {
+      return {
+        success: true,
+        fromCache: true,
+        skipped: true,
+        retryAfterMs: MANUAL_CATALOG_REFRESH_COOLDOWN_MS - (now - lastManualCatalogRefreshAtRef.current),
+      };
+    }
 
-      if (mergedCache.length) {
-        setLibrary(mergedCache);
+    if (force) {
+      lastManualCatalogRefreshAtRef.current = now;
+    }
+
+    const task = (async () => {
+      try {
+        const cachedVersionRaw = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalogVersion);
+        const cachedVersion = Number(cachedVersionRaw || 0);
+        const isLegacyCache = cachedVersion !== EXERCISE_CATALOG_CACHE_VERSION;
+
+        if (isLegacyCache) {
+          await AsyncStorage.removeItem(STORAGE_KEYS.exerciseCatalog);
+          await AsyncStorage.removeItem(STORAGE_KEYS.exerciseCatalogSyncedAt);
+          await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogVersion, String(EXERCISE_CATALOG_CACHE_VERSION));
+        }
+
+        const cachedCatalog = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalog);
+        const cachedSyncedAt = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalogSyncedAt);
+        const parsedCache = cachedCatalog ? JSON.parse(cachedCatalog) : [];
+        const mergedCache = mergeCatalogs(snapshotCatalog, parsedCache);
+        const syncedAt = cachedSyncedAt || null;
+        const isStale = !syncedAt || (Date.now() - new Date(syncedAt).getTime()) > EXERCISE_CACHE_TTL_MS;
+
+        if (!cachedCatalog) {
+          await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(snapshotCatalog));
+          await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogVersion, String(EXERCISE_CATALOG_CACHE_VERSION));
+        }
+
+        if (mergedCache.length) {
+          setLibrary(mergedCache);
+          setCatalogMeta({
+            source: parsedCache.length ? 'cache' : 'snapshot',
+            syncedAt,
+            remoteAvailable: mergedCache.some(item => item.source === 'wger'),
+            lastError: null,
+          });
+        }
+
+        const shouldFetchRemote = force || isStale || !parsedCache.length;
+        if (!shouldFetchRemote) {
+          return { success: true, fromCache: true };
+        }
+
+        const remoteCatalog = await fetchWgerCatalog();
+        if (!remoteCatalog.length) {
+          return { success: true, fromCache: true };
+        }
+        const mergedRemote = mergeCatalogs(snapshotCatalog, remoteCatalog);
+        const timestamp = new Date().toISOString();
+        await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(mergedRemote));
+        await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogSyncedAt, timestamp);
+        await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogVersion, String(EXERCISE_CATALOG_CACHE_VERSION));
+        setLibrary(mergedRemote);
         setCatalogMeta({
-          source: parsedCache.length ? 'cache' : 'snapshot',
-          syncedAt,
-          remoteAvailable: mergedCache.some(item => item.source === 'wger'),
+          source: 'wger',
+          syncedAt: timestamp,
+          remoteAvailable: true,
           lastError: null,
         });
+        return { success: true, fromCache: false };
+      } catch (error) {
+        setCatalogMeta(prev => ({
+          ...prev,
+          lastError: error.message || 'Exercise catalog sync failed',
+        }));
+        return { success: false, error: error.message };
+      } finally {
+        catalogRefreshInFlightRef.current = null;
       }
+    })();
 
-      const shouldFetchRemote = force || isStale || !parsedCache.length;
-      if (!shouldFetchRemote) {
-        return { success: true, fromCache: true };
-      }
-
-      const remoteCatalog = await fetchWgerCatalog();
-      if (!remoteCatalog.length) {
-        return { success: true, fromCache: true };
-      }
-      const mergedRemote = mergeCatalogs(snapshotCatalog, remoteCatalog);
-      const timestamp = new Date().toISOString();
-      await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(mergedRemote));
-      await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogSyncedAt, timestamp);
-      setLibrary(mergedRemote);
-      setCatalogMeta({
-        source: 'wger',
-        syncedAt: timestamp,
-        remoteAvailable: true,
-        lastError: null,
-      });
-      return { success: true, fromCache: false };
-    } catch (error) {
-      setCatalogMeta(prev => ({
-        ...prev,
-        lastError: error.message || 'Exercise catalog sync failed',
-      }));
-      return { success: false, error: error.message };
-    }
+    catalogRefreshInFlightRef.current = task;
+    return task;
   };
 
   useEffect(() => {
@@ -107,12 +167,13 @@ export const WorkoutProvider = ({ children }) => {
       setRoutines(enriched.routines);
       setHistory(enriched.history);
     }
-  }, [library]);
+  }, [library, exerciseAliases]);
 
   useEffect(() => {
     if (!user && !isGuest) {
       setRoutines([]);
       setHistory([]);
+      setExerciseAliases({});
       setDataLoaded(false);
       setLoadedUserId(null);
     }
@@ -123,6 +184,7 @@ export const WorkoutProvider = ({ children }) => {
 
     setRoutines([]);
     setHistory([]);
+    setExerciseAliases({});
     setDataLoaded(false);
     setLoadedUserId(null);
 
@@ -133,25 +195,38 @@ export const WorkoutProvider = ({ children }) => {
         if (isGuest) {
           const storedRoutines = await AsyncStorage.getItem(STORAGE_KEYS.routines);
           const storedHistory = await AsyncStorage.getItem(STORAGE_KEYS.history);
+          const storedAliases = await AsyncStorage.getItem(STORAGE_KEYS.exerciseAliases);
           const routinesData = storedRoutines ? JSON.parse(storedRoutines) : [];
           const historyData = storedHistory ? JSON.parse(storedHistory) : [];
-          const enriched = enrichData(routinesData, historyData, library);
+          const aliasesData = sanitizeAliasMap(storedAliases ? JSON.parse(storedAliases) : {});
+          const enriched = enrichData(routinesData, historyData, library, aliasesData);
 
           setRoutines(enriched.routines);
           setHistory(enriched.history);
+          setExerciseAliases(aliasesData);
           setLoadedUserId('guest');
           setDataLoaded(true);
-          lastSavedRef.current = JSON.stringify(enriched);
+          lastSavedRef.current = JSON.stringify({
+            ...enriched,
+            exerciseAliases: aliasesData,
+          });
         } else if (user) {
           const userDocRef = doc(db, 'users', user.uid);
           unsubscribe = onSnapshot(userDocRef, (docSnap) => {
             const routinesData = docSnap.exists() ? (docSnap.data().routines || []) : [];
             const historyData = docSnap.exists() ? (docSnap.data().history || []) : [];
-            const enriched = enrichData(routinesData, historyData, library);
+            const aliasesData = sanitizeAliasMap(
+              docSnap.exists() ? (docSnap.data().exerciseAliases || {}) : {}
+            );
+            const enriched = enrichData(routinesData, historyData, library, aliasesData);
 
             setRoutines(enriched.routines);
             setHistory(enriched.history);
-            lastSavedRef.current = JSON.stringify(enriched);
+            setExerciseAliases(aliasesData);
+            lastSavedRef.current = JSON.stringify({
+              ...enriched,
+              exerciseAliases: aliasesData,
+            });
             setLoadedUserId(user.uid);
             setDataLoaded(true);
           });
@@ -177,17 +252,19 @@ export const WorkoutProvider = ({ children }) => {
 
     const saveData = async () => {
       try {
-        const payloadStr = JSON.stringify({ routines, history });
+        const payloadStr = JSON.stringify({ routines, history, exerciseAliases });
         if (lastSavedRef.current === payloadStr) return;
 
         if (isGuest) {
           await AsyncStorage.setItem(STORAGE_KEYS.routines, JSON.stringify(routines));
           await AsyncStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history));
+          await AsyncStorage.setItem(STORAGE_KEYS.exerciseAliases, JSON.stringify(exerciseAliases));
         } else if (user?.uid) {
           const userDocRef = doc(db, 'users', user.uid);
           await setDoc(userDocRef, {
             routines,
             history,
+            exerciseAliases,
             updatedAt: new Date().toISOString(),
           }, { merge: true });
         }
@@ -202,24 +279,66 @@ export const WorkoutProvider = ({ children }) => {
     };
 
     saveData();
-  }, [routines, history, user, isGuest, dataLoaded, loadedUserId]);
+  }, [routines, history, exerciseAliases, user, isGuest, dataLoaded, loadedUserId]);
 
   const exportBackupData = () => ({
     routines,
     history,
+    exerciseAliases,
   });
 
   const importBackupData = (payload = {}) => {
     const nextRoutines = Array.isArray(payload.routines) ? payload.routines : [];
     const nextHistory = Array.isArray(payload.history) ? payload.history : [];
-    const enriched = enrichData(nextRoutines, nextHistory, library);
+    const nextAliases = sanitizeAliasMap(payload.exerciseAliases || payload.aliases || {});
+    const enriched = enrichData(nextRoutines, nextHistory, library, nextAliases);
 
     setRoutines(enriched.routines);
     setHistory(enriched.history);
+    setExerciseAliases(nextAliases);
     lastSavedRef.current = null;
     setDataLoaded(true);
     setLoadedUserId(isGuest ? 'guest' : user?.uid || loadedUserId);
     return { success: true, routines: enriched.routines.length, history: enriched.history.length };
+  };
+
+  const addExerciseAlias = (legacyName, canonicalName) => {
+    const normalizedLegacy = normalizeExerciseName(legacyName);
+    const normalizedCanonical = normalizeExerciseName(canonicalName);
+    if (!normalizedLegacy || !normalizedCanonical) {
+      return { success: false, error: 'Invalid exercise name' };
+    }
+
+    const matchedTarget = (library || []).find(
+      item => normalizeExerciseName(item.name) === normalizedCanonical
+    );
+    if (!matchedTarget) {
+      return { success: false, error: 'Target exercise not found in current catalog' };
+    }
+
+    setExerciseAliases(prev => ({
+      ...prev,
+      [normalizedLegacy]: matchedTarget.name,
+    }));
+
+    return { success: true, alias: normalizedLegacy, canonical: matchedTarget.name };
+  };
+
+  const removeExerciseAlias = (legacyName) => {
+    const normalizedLegacy = normalizeExerciseName(legacyName);
+    if (!normalizedLegacy) {
+      return { success: false, error: 'Invalid exercise name' };
+    }
+    if (!exerciseAliases[normalizedLegacy]) {
+      return { success: false, error: 'Alias not found' };
+    }
+
+    setExerciseAliases(prev => {
+      const next = { ...prev };
+      delete next[normalizedLegacy];
+      return next;
+    });
+    return { success: true };
   };
 
   const addRoutine = (name) => {
@@ -412,6 +531,7 @@ export const WorkoutProvider = ({ children }) => {
     <WorkoutContext.Provider value={{
       routines,
       history,
+      exerciseAliases,
       library,
       catalogMeta,
       addRoutine,
@@ -429,6 +549,8 @@ export const WorkoutProvider = ({ children }) => {
       refreshExerciseCatalog,
       exportBackupData,
       importBackupData,
+      addExerciseAlias,
+      removeExerciseAlias,
       dashboard7,
       dashboard30,
       recentPRs,

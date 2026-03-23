@@ -30,10 +30,14 @@ const {
   computeMuscleDashboard,
   enrichWorkoutData,
   getExerciseVolumeScore,
+  mergeCatalogs,
+  normalizeExerciseName,
 } = require('../utils/exerciseCatalog.js');
 const {
   dedupeFoods,
   isBarcodeQuery,
+  normalizeUsdaFood,
+  rankHybridFoodResults,
   rankOpenFoodFactsResults,
   scoreOpenFoodFactsResult,
 } = require('../utils/nutritionSearch.js');
@@ -48,7 +52,11 @@ const { toLocalDateKey } = require('../utils/date.js');
 
 const backup = createBackupPayload({
   isGuest: true,
-  workout: { routines: [{ id: '1', exercises: [] }], history: [] },
+  workout: {
+    routines: [{ id: '1', exercises: [] }],
+    history: [],
+    exerciseAliases: { 'cable bar pushdown': 'Cable Triceps Pushdown' },
+  },
   nutrition: {
     dailyMeals: { '2026-03-09': [] },
     favoriteFoods: [],
@@ -63,14 +71,56 @@ const backup = createBackupPayload({
 const parsedBackup = parseBackupString(serializeBackup(backup));
 assert.equal(parsedBackup.backupVersion, 1);
 assert.equal(parsedBackup.authMode, 'guest');
+assert.equal(parsedBackup.workout.exerciseAliases['cable bar pushdown'], 'Cable Triceps Pushdown');
 assert.equal(parsedBackup.nutrition.recentSearches[0], 'eggs');
 assert.equal(parsedBackup.nutrition.dailyGoals.protein, 170);
 assert.equal(parsedBackup.nutrition.mealTemplates[0].name, 'Eggs');
 assert.equal(parsedBackup.nutrition.scanHistory[0].barcode, '12345678');
 
+assert.throws(() => parseBackupString('{bad json'), /Invalid JSON format/);
+assert.throws(
+  () => parseBackupString(JSON.stringify({ backupVersion: 999 })),
+  /Unsupported backup version: 999/
+);
+
+const parsedWithInvalidTypes = parseBackupString(JSON.stringify({
+  backupVersion: 1,
+  workout: { routines: 'invalid', history: null, exerciseAliases: [] },
+  nutrition: {
+    dailyMeals: [],
+    favoriteFoods: 'invalid',
+    recentSearches: {},
+    dailyGoals: 'invalid',
+    mealTemplates: {},
+    scanHistory: null,
+  },
+  profile: { profile: [], measurements: {} },
+}));
+assert.deepEqual(parsedWithInvalidTypes.workout.routines, []);
+assert.deepEqual(parsedWithInvalidTypes.workout.history, []);
+assert.deepEqual(parsedWithInvalidTypes.workout.exerciseAliases, {});
+assert.deepEqual(parsedWithInvalidTypes.nutrition.favoriteFoods, []);
+assert.deepEqual(parsedWithInvalidTypes.nutrition.dailyMeals, {});
+assert.equal(parsedWithInvalidTypes.nutrition.dailyGoals.calories, 2200);
+assert.deepEqual(parsedWithInvalidTypes.profile.measurements, []);
+
 const seedCatalog = buildSeedCatalog([
   { id: '1', name: 'Barbell Curl', bodyPart: 'Arms', target: 'Biceps' },
 ]);
+assert.deepEqual(seedCatalog[0].primaryMuscles, ['Biceps']);
+assert.ok(!seedCatalog[0].primaryMuscles.includes('Triceps'));
+
+const mergedCatalog = mergeCatalogs(
+  [{ id: 'seed-1', name: 'Barbell Curl', source: 'seed', primaryMuscles: ['Biceps', 'Triceps'], secondaryMuscles: ['Forearms'], equipment: ['Barbell'], images: [], videos: [] }],
+  [{ id: 'snapshot-1', name: 'Barbell Curl', source: 'snapshot', primaryMuscles: ['Biceps'], secondaryMuscles: ['Forearms'], equipment: ['Barbell'], images: [], videos: ['x'] }]
+);
+assert.equal(mergedCatalog[0].source, 'snapshot');
+assert.deepEqual(mergedCatalog[0].primaryMuscles, ['Biceps']);
+assert.equal(normalizeExerciseName('Dumbell Shrugs'), normalizeExerciseName('Dumbbell Shrug'));
+assert.equal(normalizeExerciseName('Cable Crunches'), normalizeExerciseName('Cable Crunch'));
+assert.equal(normalizeExerciseName('Leg Extension'), normalizeExerciseName('Leg Extensions'));
+assert.equal(normalizeExerciseName('Face Pulls'), normalizeExerciseName('Face Pull'));
+
 const enriched = enrichWorkoutData({
   routines: [{ id: 'r1', exercises: [{ name: 'Barbell Curl', sets: [{ weight: '20', reps: '10', isDone: true }] }] }],
   history: [{ id: 'h1', dateISO: '2026-03-09', exercises: [{ name: 'Barbell Curl', sets: [{ weight: '20', reps: '10', isDone: true }] }] }],
@@ -79,11 +129,118 @@ const enriched = enrichWorkoutData({
 assert.equal(enriched.routines[0].exercises[0].mappingStatus, 'mapped');
 assert.ok(enriched.routines[0].exercises[0].primaryMuscles.includes('Biceps'));
 
+const tricepsCatalog = buildSeedCatalog([
+  { id: '2', name: 'Cable Triceps Pushdown', bodyPart: 'Arms', target: 'Triceps' },
+]);
+const aliasEnriched = enrichWorkoutData({
+  routines: [{ id: 'r2', exercises: [{ name: 'Cable Bar Pushdown', sets: [{ weight: '30', reps: '12', isDone: true }] }] }],
+  history: [],
+}, tricepsCatalog, {
+  customAliases: { 'cable bar pushdown': 'cable triceps pushdown' },
+});
+assert.equal(aliasEnriched.routines[0].exercises[0].mappingStatus, 'mapped');
+assert.equal(aliasEnriched.routines[0].exercises[0].catalogExerciseId, 'seed-2');
+
+const facePullCatalog = [
+  {
+    id: 'snapshot-face-pull',
+    sourceId: 'face-pull',
+    name: 'Face Pull',
+    bodyPart: 'Shoulders',
+    target: 'Rear Delts',
+    primaryMuscles: ['Shoulders'],
+    secondaryMuscles: ['Upper Back'],
+    equipment: ['Cable'],
+    images: [],
+    videos: [],
+    source: 'snapshot',
+  },
+];
+const facePullAliasEnriched = enrichWorkoutData({
+  routines: [{ id: 'r-face', exercises: [{ name: 'Face Pulls', sets: [{ isDone: true }] }] }],
+  history: [],
+}, facePullCatalog);
+assert.equal(facePullAliasEnriched.routines[0].exercises[0].mappingStatus, 'mapped');
+assert.equal(facePullAliasEnriched.routines[0].exercises[0].catalogExerciseId, 'snapshot-face-pull');
+
+const shoulderCatalog = buildSeedCatalog([
+  { id: '53', name: 'Shoulder Press Machine', bodyPart: 'Shoulders', target: 'Deltoids' },
+  { id: '8', name: 'Lateral Raise', bodyPart: 'Shoulders', target: 'Deltoids' },
+]);
+const shoulderAliasEnriched = enrichWorkoutData({
+  routines: [{
+    id: 'r3',
+    exercises: [
+      { name: 'Machine Shoulder Press', sets: [{ isDone: true }, { isDone: true }, { isDone: true }] },
+      { name: 'Lateral Raises', sets: [{ isDone: true }, { isDone: true }, { isDone: true }] },
+    ],
+  }],
+  history: [],
+}, shoulderCatalog);
+assert.equal(shoulderAliasEnriched.routines[0].exercises[0].mappingStatus, 'mapped');
+assert.equal(shoulderAliasEnriched.routines[0].exercises[1].mappingStatus, 'mapped');
+assert.ok(shoulderAliasEnriched.routines[0].exercises[1].primaryMuscles.includes('Shoulders'));
+
 const score = getExerciseVolumeScore(enriched.history[0].exercises[0]);
 assert.equal(score.score, 200);
 
 const dashboard = computeMuscleDashboard(enriched.history, 30);
 assert.equal(dashboard.topMuscles[0].muscle, 'Biceps');
+
+const todayIso = toLocalDateKey(new Date());
+const sixDaysAgo = new Date();
+sixDaysAgo.setDate(sixDaysAgo.getDate() - 6);
+const sevenDaysAgo = new Date();
+sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+const eightDaysAgo = new Date();
+eightDaysAgo.setDate(eightDaysAgo.getDate() - 8);
+const windowHistory = [
+  {
+    id: 'w-7',
+    dateISO: toLocalDateKey(sevenDaysAgo),
+    exercises: [
+      { name: 'Shoulder Press Machine', mappingStatus: 'mapped', primaryMuscles: ['Shoulders'], secondaryMuscles: [], sets: [{ isDone: true }, { isDone: true }, { isDone: true }] },
+      { name: 'Lateral Raise', mappingStatus: 'mapped', primaryMuscles: ['Shoulders'], secondaryMuscles: [], sets: [{ isDone: true }, { isDone: true }, { isDone: true }] },
+    ],
+  },
+  {
+    id: 'w-6-multi-primary',
+    dateISO: toLocalDateKey(sixDaysAgo),
+    exercises: [{ name: 'Machine Press', mappingStatus: 'mapped', primaryMuscles: ['Shoulders', 'Front Delts'], secondaryMuscles: [], sets: [{ isDone: true }, { isDone: true }, { isDone: true }] }],
+  },
+  {
+    id: 'w-8-old',
+    dateISO: toLocalDateKey(eightDaysAgo),
+    exercises: [{ name: 'Shoulder Press', mappingStatus: 'mapped', primaryMuscles: ['Shoulders'], secondaryMuscles: [], sets: [{ isDone: true }, { isDone: true }, { isDone: true }] }],
+  },
+  {
+    id: 'w-today-abs',
+    dateISO: todayIso,
+    exercises: [{ name: 'Crunch', mappingStatus: 'mapped', primaryMuscles: ['Abs'], secondaryMuscles: [], sets: [{ isDone: true }, { isDone: true }, { isDone: true }] }],
+  },
+];
+const windowDashboard = computeMuscleDashboard(windowHistory, 7, []);
+const windowShoulders = windowDashboard.muscles.find(item => item.muscle === 'Shoulders');
+assert.equal(windowShoulders?.directSets, 9);
+
+const exactBoundaryHistory = [
+  {
+    id: 'only-7',
+    dateISO: toLocalDateKey(sevenDaysAgo),
+    exercises: [
+      { name: 'Shoulder Press Machine', mappingStatus: 'mapped', primaryMuscles: ['Shoulders'], secondaryMuscles: [], sets: [{ isDone: true }, { isDone: true }, { isDone: true }] },
+      { name: 'Lateral Raise', mappingStatus: 'mapped', primaryMuscles: ['Shoulders'], secondaryMuscles: [], sets: [{ isDone: true }, { isDone: true }, { isDone: true }] },
+    ],
+  },
+  {
+    id: 'old-8',
+    dateISO: toLocalDateKey(eightDaysAgo),
+    exercises: [{ name: 'Shoulder Press', mappingStatus: 'mapped', primaryMuscles: ['Shoulders'], secondaryMuscles: [], sets: [{ isDone: true }, { isDone: true }, { isDone: true }] }],
+  },
+];
+const exactBoundaryDashboard = computeMuscleDashboard(exactBoundaryHistory, 7, []);
+const exactBoundaryShoulders = exactBoundaryDashboard.muscles.find(item => item.muscle === 'Shoulders');
+assert.equal(exactBoundaryShoulders?.directSets, 6);
 
 assert.equal(isBarcodeQuery('1234567890123'), true);
 assert.equal(isBarcodeQuery('chicken'), false);
@@ -98,6 +255,37 @@ const rankedFoods = rankOpenFoodFactsResults([
 ], 'greek yogurt');
 assert.equal(rankedFoods[0].name, 'Greek Yogurt');
 assert.ok(scoreOpenFoodFactsResult(rankedFoods[0], 'greek yogurt') > scoreOpenFoodFactsResult(rankedFoods[1], 'greek yogurt'));
+
+const normalizedUsda = normalizeUsdaFood({
+  fdcId: 123,
+  description: 'Greek Yogurt',
+  brandOwner: 'USDA Brand',
+  gtinUpc: '111222333444',
+  servingSize: 170,
+  servingSizeUnit: 'g',
+  foodNutrients: [
+    { nutrientNumber: '208', value: 120 },
+    { nutrientNumber: '203', value: 15 },
+    { nutrientNumber: '205', value: 8 },
+    { nutrientNumber: '204', value: 0 },
+  ],
+});
+assert.equal(normalizedUsda.source, 'usda');
+assert.equal(normalizedUsda.name, 'Greek Yogurt');
+assert.equal(normalizedUsda.barcode, '111222333444');
+assert.equal(normalizedUsda.macrosPer100, false);
+
+const hybridTextRanked = rankHybridFoodResults([
+  { id: 'off-1', source: 'off', name: 'Greek Yogurt', brand: 'Brand A', calories: 90, protein: 10, carbs: 4, fat: 0 },
+  { id: 'usda-1', source: 'usda', name: 'Greek Yogurt', brand: 'USDA', calories: 95, protein: 10, carbs: 5, fat: 0, isVerified: true },
+], 'greek yogurt', { barcode: false });
+assert.equal(hybridTextRanked[0].source, 'usda');
+
+const hybridBarcodeRanked = rankHybridFoodResults([
+  { id: 'usda-2', source: 'usda', name: 'Milk', brand: 'USDA', barcode: '12345678', calories: 60, protein: 3, carbs: 5, fat: 2, isVerified: true },
+  { id: 'off-2', source: 'off', name: 'Milk', brand: 'OFF', barcode: '12345678', calories: 62, protein: 3, carbs: 5, fat: 2 },
+], '12345678', { barcode: true });
+assert.equal(hybridBarcodeRanked[0].source, 'off');
 
 const macroSplit = buildMacroSplit({ protein: 40, carbs: 50, fat: 20 });
 assert.equal(macroSplit.length, 3);

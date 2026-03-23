@@ -100,6 +100,9 @@ function normalizeServingBasedFood(food = {}) {
   };
 }
 
+const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const SEARCH_CACHE_MAX_ENTRIES = 40;
+
 export default function AddMealModal({
   visible,
   onClose,
@@ -143,7 +146,11 @@ export default function AddMealModal({
   const [entryType, setEntryType] = useState(null); // 'per100g' veya 'exactServing'
   const [customAmount, setCustomAmount] = useState('100'); // gram miktarı
   const searchIsBarcode = /^[0-9]{8,14}$/.test(searchQuery.trim());
+  const hasSearchQuery = Boolean(searchQuery.trim());
+  const usdaProxyEnabled = Boolean(String(process.env.EXPO_PUBLIC_USDA_PROXY_URL || '').trim());
   const searchRequestIdRef = useRef(0);
+  const searchResultsCacheRef = useRef(new Map());
+  const searchInFlightRef = useRef(new Map());
   const autoLaunchBarcodeRef = useRef(false);
   const suggestedQueries = ['chicken breast', 'greek yogurt', 'banana', 'rice'];
   const [showScanner, setShowScanner] = useState(false);
@@ -294,19 +301,59 @@ export default function AddMealModal({
 
   const executeSearch = async (query) => {
     const normalized = String(query || '').trim();
+    const requestId = Date.now();
+    searchRequestIdRef.current = requestId;
+
     if (!normalized) {
       setSearchResults([]);
       setLoading(false);
       return;
     }
 
-    const requestId = Date.now();
-    searchRequestIdRef.current = requestId;
+    const cacheKey = normalized.toLowerCase();
+    const cachedEntry = searchResultsCacheRef.current.get(cacheKey);
+    if (
+      cachedEntry &&
+      Array.isArray(cachedEntry.results) &&
+      (Date.now() - cachedEntry.timestamp) < SEARCH_CACHE_TTL_MS
+    ) {
+      if (searchRequestIdRef.current === requestId) {
+        setSearchResults(cachedEntry.results);
+        setLoading(false);
+      }
+      return;
+    }
+
     setLoading(true);
     try {
-      const results = await searchFood(normalized);
+      let pendingRequest = searchInFlightRef.current.get(cacheKey);
+      if (!pendingRequest) {
+        const createdRequest = searchFood(normalized)
+          .then(results => (Array.isArray(results) ? results : []))
+          .finally(() => {
+            const activeRequest = searchInFlightRef.current.get(cacheKey);
+            if (activeRequest === createdRequest) {
+              searchInFlightRef.current.delete(cacheKey);
+            }
+          });
+        searchInFlightRef.current.set(cacheKey, createdRequest);
+        pendingRequest = createdRequest;
+      }
+
+      const results = await pendingRequest;
       if (searchRequestIdRef.current === requestId) {
         setSearchResults(results || []);
+        const safeResults = Array.isArray(results) ? results : [];
+        const nextCache = searchResultsCacheRef.current;
+        nextCache.set(cacheKey, {
+          timestamp: Date.now(),
+          results: safeResults,
+        });
+        while (nextCache.size > SEARCH_CACHE_MAX_ENTRIES) {
+          const oldestKey = nextCache.keys().next().value;
+          if (oldestKey === undefined) break;
+          nextCache.delete(oldestKey);
+        }
       }
     } catch (error) {
       Alert.alert('Error', 'Search failed. Please try again.');
@@ -630,50 +677,58 @@ export default function AddMealModal({
 
                   <Text style={styles.searchHelperText}>
                     {searchIsBarcode
-                      ? 'Barcode mode: OpenFoodFacts product lookup is running automatically.'
-                      : 'Search runs on OpenFoodFacts and updates automatically while you type.'}
+                      ? usdaProxyEnabled
+                        ? 'Barcode mode: OpenFoodFacts first, USDA fallback if needed.'
+                        : 'Barcode mode: OpenFoodFacts product lookup is running automatically.'
+                      : usdaProxyEnabled
+                        ? 'Text search: USDA first, OpenFoodFacts fallback for broader coverage.'
+                        : 'Search runs on OpenFoodFacts and updates automatically while you type.'}
                   </Text>
 
-                  <View style={styles.quickAccessRow}>
-                    <TouchableOpacity
-                      style={[styles.quickAccessCard, styles.quickAccessCardAccent]}
-                      onPress={() => {
-                        setModalTab('favorites');
-                        setSearchQuery('');
-                      }}
-                    >
-                      <Ionicons name="heart" size={20} color="#CF6679" />
-                      <Text style={styles.quickAccessTitle}>Favorites</Text>
-                      <Text style={styles.quickAccessMeta}>{favoriteFoods.length} saved foods</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.quickAccessCard}
-                      onPress={() => setShowCustomForm(true)}
-                    >
-                      <Ionicons name="create-outline" size={20} color="#BB86FC" />
-                      <Text style={styles.quickAccessTitle}>Custom Meal</Text>
-                      <Text style={styles.quickAccessMeta}>Add your own macros</Text>
-                    </TouchableOpacity>
-                  </View>
+                  {!hasSearchQuery ? (
+                    <>
+                      <View style={styles.quickAccessRow}>
+                        <TouchableOpacity
+                          style={[styles.quickAccessCard, styles.quickAccessCardAccent]}
+                          onPress={() => {
+                            setModalTab('favorites');
+                            setSearchQuery('');
+                          }}
+                        >
+                          <Ionicons name="heart" size={20} color="#CF6679" />
+                          <Text style={styles.quickAccessTitle}>Favorites</Text>
+                          <Text style={styles.quickAccessMeta}>{favoriteFoods.length} saved foods</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.quickAccessCard}
+                          onPress={() => setShowCustomForm(true)}
+                        >
+                          <Ionicons name="create-outline" size={20} color="#BB86FC" />
+                          <Text style={styles.quickAccessTitle}>Custom Meal</Text>
+                          <Text style={styles.quickAccessMeta}>Add your own macros</Text>
+                        </TouchableOpacity>
+                      </View>
 
-                  <TouchableOpacity
-                    style={[styles.barcodeCard, searchIsBarcode && styles.barcodeCardActive]}
-                    onPress={openScanner}
-                    activeOpacity={0.85}
-                  >
-                    <View style={styles.barcodeIconWrap}>
-                      <Ionicons name="barcode-outline" size={22} color={searchIsBarcode ? '#121212' : '#BB86FC'} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.barcodeTitle}>Barcode-friendly search</Text>
-                      <Text style={styles.barcodeSubtitle}>
-                        Scan with camera or paste EAN/UPC digits to jump straight to packaged foods.
-                      </Text>
-                    </View>
-                    <Ionicons name="scan-outline" size={22} color={searchIsBarcode ? '#121212' : '#BB86FC'} />
-                  </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.barcodeCard, searchIsBarcode && styles.barcodeCardActive]}
+                        onPress={openScanner}
+                        activeOpacity={0.85}
+                      >
+                        <View style={styles.barcodeIconWrap}>
+                          <Ionicons name="barcode-outline" size={22} color={searchIsBarcode ? '#121212' : '#BB86FC'} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.barcodeTitle}>Barcode-friendly search</Text>
+                          <Text style={styles.barcodeSubtitle}>
+                            Scan with camera or paste EAN/UPC digits to jump straight to packaged foods.
+                          </Text>
+                        </View>
+                        <Ionicons name="scan-outline" size={22} color={searchIsBarcode ? '#121212' : '#BB86FC'} />
+                      </TouchableOpacity>
+                    </>
+                  ) : null}
 
-                  {recentSearches?.length ? (
+                  {!hasSearchQuery && recentSearches?.length ? (
                     <View style={styles.recentSearchSection}>
                       <Text style={styles.recentSearchTitle}>Recent searches</Text>
                       <View style={styles.recentSearchRow}>
@@ -690,7 +745,7 @@ export default function AddMealModal({
                     </View>
                   ) : null}
 
-                  {!searchQuery.trim() ? (
+                  {!hasSearchQuery ? (
                     <View style={styles.discoverySection}>
                       <Text style={styles.discoveryTitle}>Try these searches</Text>
                       <View style={styles.discoveryChipRow}>

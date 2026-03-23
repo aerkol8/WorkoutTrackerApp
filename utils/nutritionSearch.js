@@ -3,6 +3,32 @@ export function isBarcodeQuery(query = '') {
   return /^[0-9]{8,14}$/.test(normalized);
 }
 
+function toNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+const USDA_PROXY_TIMEOUT_MS = 8 * 1000;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = USDA_PROXY_TIMEOUT_MS) {
+  if (typeof AbortController === 'undefined') {
+    return fetch(url, options);
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`USDA proxy timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export function dedupeFoods(items = []) {
   const seen = new Set();
   return items.filter(item => {
@@ -67,27 +93,194 @@ function includesWordBoundary(text = '', query = '') {
   return String(text).toLowerCase().split(/\s+/).includes(String(query).toLowerCase());
 }
 
-export function scoreOpenFoodFactsResult(item, query) {
+function scoreNameAndBrand(name = '', brand = '', query = '') {
   const normalizedQuery = String(query || '').trim().toLowerCase();
-  const name = String(item.name || '').toLowerCase();
-  const brand = String(item.brand || '').toLowerCase();
+  if (!normalizedQuery) return 0;
+
+  const normalizedName = String(name || '').toLowerCase();
+  const normalizedBrand = String(brand || '').toLowerCase();
   let score = 0;
 
+  if (normalizedName === normalizedQuery) score += 120;
+  if (normalizedBrand === normalizedQuery) score += 50;
+  if (normalizedName.startsWith(normalizedQuery)) score += 40;
+  if (normalizedBrand.startsWith(normalizedQuery)) score += 15;
+  if (normalizedName.includes(normalizedQuery)) score += 18;
+  if (normalizedBrand.includes(normalizedQuery)) score += 8;
+  if (includesWordBoundary(normalizedName, normalizedQuery)) score += 15;
+
+  return score;
+}
+
+export function scoreOpenFoodFactsResult(item, query) {
+  const normalizedQuery = String(query || '').trim();
   if (!normalizedQuery) return 0;
+
+  let score = scoreNameAndBrand(item.name, item.brand, normalizedQuery);
   if (item.barcode && item.barcode === normalizedQuery) score += 200;
-  if (name === normalizedQuery) score += 120;
-  if (brand === normalizedQuery) score += 50;
-  if (name.startsWith(normalizedQuery)) score += 40;
-  if (brand.startsWith(normalizedQuery)) score += 15;
-  if (name.includes(normalizedQuery)) score += 18;
-  if (brand.includes(normalizedQuery)) score += 8;
-  if (includesWordBoundary(name, normalizedQuery)) score += 15;
   if (item.servingQuantity) score += 4;
   if (item.image) score += 4;
   if (item.calories > 0) score += 2;
   if ((item.protein || item.carbs || item.fat) > 0) score += 2;
 
   return score;
+}
+
+function getNutrientValue(food = {}, nutrientCandidates = []) {
+  const normalizedCandidates = (nutrientCandidates || []).map(item => String(item).toLowerCase());
+  const nutrients = Array.isArray(food.foodNutrients)
+    ? food.foodNutrients
+    : Array.isArray(food.nutrients)
+      ? food.nutrients
+      : [];
+
+  for (const nutrient of nutrients) {
+    const nutrientName = String(
+      nutrient?.nutrientName ||
+      nutrient?.name ||
+      nutrient?.nutrient?.name ||
+      ''
+    ).toLowerCase();
+    const nutrientNumber = String(
+      nutrient?.nutrientNumber ||
+      nutrient?.number ||
+      nutrient?.nutrient?.number ||
+      ''
+    ).toLowerCase();
+    const matches = normalizedCandidates.some(candidate => (
+      nutrientNumber === candidate || nutrientName.includes(candidate)
+    ));
+    if (!matches) continue;
+
+    return toNumber(
+      nutrient?.value ??
+      nutrient?.amount ??
+      nutrient?.nutrientValue ??
+      nutrient?.quantity
+    );
+  }
+
+  return 0;
+}
+
+export function normalizeUsdaFood(food = {}) {
+  if (!food || typeof food !== 'object') return null;
+
+  // If proxy already returns normalized shape, sanitize and keep.
+  if (food.source && (food.calories !== undefined || food.protein !== undefined || food.carbs !== undefined || food.fat !== undefined)) {
+    const sourceId = String(food.sourceId || food.fdcId || food.id || food.barcode || '').trim();
+    const stableIdBase = String(
+      sourceId ||
+      food.name ||
+      food.description ||
+      food.barcode ||
+      'item'
+    )
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const normalizedServingQuantity = toNumber(food.servingQuantity);
+    return {
+      id: String(food.id || `usda-${stableIdBase || 'item'}`),
+      source: 'usda',
+      sourceId,
+      name: String(food.name || food.description || '').trim(),
+      brand: String(food.brand || food.brandOwner || '').trim(),
+      calories: Math.round(toNumber(food.calories)),
+      protein: Math.round(toNumber(food.protein)),
+      carbs: Math.round(toNumber(food.carbs)),
+      fat: Math.round(toNumber(food.fat)),
+      servingSize: food.servingSize || null,
+      servingQuantity: normalizedServingQuantity > 0 ? normalizedServingQuantity : null,
+      portion: food.portion || (normalizedServingQuantity > 0 ? '1 serving' : '100g'),
+      macrosPer100: typeof food.macrosPer100 === 'boolean' ? food.macrosPer100 : normalizedServingQuantity <= 0,
+      barcode: String(food.barcode || food.gtinUpc || '').trim() || null,
+      image: food.image || null,
+      isVerified: food.isVerified !== false,
+    };
+  }
+
+  const sourceId = String(food.fdcId || food.sourceId || food.id || '').trim();
+  const calories = toNumber(
+    food.labelNutrients?.calories?.value ||
+    food.labelNutrients?.calories ||
+    getNutrientValue(food, ['208', 'energy'])
+  );
+  const protein = toNumber(
+    food.labelNutrients?.protein?.value ||
+    food.labelNutrients?.protein ||
+    getNutrientValue(food, ['203', 'protein'])
+  );
+  const carbs = toNumber(
+    food.labelNutrients?.carbohydrates?.value ||
+    food.labelNutrients?.carbohydrates ||
+    getNutrientValue(food, ['205', 'carbohydrate'])
+  );
+  const fat = toNumber(
+    food.labelNutrients?.fat?.value ||
+    food.labelNutrients?.fat ||
+    getNutrientValue(food, ['204', 'total lipid', 'fat'])
+  );
+  const servingQuantity = toNumber(food.servingSize || food.servingQuantity);
+  const servingUnit = String(food.servingSizeUnit || '').trim();
+  const servingSize = servingQuantity > 0
+    ? `${servingQuantity}${servingUnit ? ` ${servingUnit}` : ''}`.trim()
+    : null;
+  const name = String(
+    food.description ||
+    food.name ||
+    food.lowercaseDescription ||
+    ''
+  ).trim();
+  const barcode = String(food.gtinUpc || food.barcode || '').trim() || null;
+
+  return {
+    id: `usda-${sourceId || barcode || name}`,
+    source: 'usda',
+    sourceId,
+    name,
+    brand: String(food.brandOwner || food.brandName || food.brand || '').trim(),
+    calories: Math.round(calories),
+    protein: Math.round(protein),
+    carbs: Math.round(carbs),
+    fat: Math.round(fat),
+    servingSize,
+    servingQuantity: servingQuantity > 0 ? servingQuantity : null,
+    portion: servingQuantity > 0 ? '1 serving' : '100g',
+    macrosPer100: servingQuantity <= 0,
+    barcode,
+    image: null,
+    isVerified: true,
+  };
+}
+
+export function rankHybridFoodResults(items = [], query = '', { barcode = false } = {}) {
+  const normalizedQuery = String(query || '').trim();
+  const sourcePriority = barcode
+    ? { off: 3, usda: 2, custom: 1 }
+    : { usda: 3, off: 2, custom: 1 };
+
+  return (items || [])
+    .map(item => {
+      const baseScore = item.source === 'off'
+        ? scoreOpenFoodFactsResult(item, normalizedQuery)
+        : scoreNameAndBrand(item.name, item.brand, normalizedQuery)
+          + (item.barcode && item.barcode === normalizedQuery ? 200 : 0)
+          + (item.isVerified ? 4 : 0)
+          + (item.servingQuantity ? 3 : 0)
+          + ((item.calories || item.protein || item.carbs || item.fat) ? 2 : 0);
+      const sourceScore = (sourcePriority[String(item.source || '').toLowerCase()] || 0) * 25;
+
+      return {
+        ...item,
+        matchScore: baseScore + sourceScore,
+      };
+    })
+    .sort((a, b) => {
+      if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
+      if (Boolean(b.image) !== Boolean(a.image)) return Number(Boolean(b.image)) - Number(Boolean(a.image));
+      return String(a.name || '').localeCompare(String(b.name || ''), 'en', { sensitivity: 'base' });
+    });
 }
 
 export function rankOpenFoodFactsResults(items = [], query = '') {
@@ -104,11 +297,22 @@ export async function searchUsdaProxy(query, proxyUrl, { barcode = false } = {})
   if (!proxyUrl) return [];
 
   const url = `${proxyUrl}${proxyUrl.includes('?') ? '&' : '?'}type=${barcode ? 'barcode' : 'text'}&query=${encodeURIComponent(query)}`;
-  const response = await fetch(url);
+  const response = await fetchWithTimeout(url);
   if (!response.ok) {
     throw new Error(`USDA proxy request failed: ${response.status}`);
   }
 
   const data = await response.json();
-  return Array.isArray(data.foods) ? data.foods : [];
+  const foods = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.foods)
+      ? data.foods
+      : [];
+  return foods
+    .map(normalizeUsdaFood)
+    .filter(item =>
+      item &&
+      item.name &&
+      (item.calories > 0 || item.protein > 0 || item.carbs > 0 || item.fat > 0)
+    );
 }

@@ -68,6 +68,7 @@ export default function NutritionScreen() {
     dailyMeals,
   } = useNutrition();
   const { user, isGuest } = useAuth();
+  const usdaProxyEnabled = Boolean(String(process.env.EXPO_PUBLIC_USDA_PROXY_URL || '').trim());
 
   // SELECTED DATE STATES
   const [selectedDate, setSelectedDate] = useState(getTodayKey());
@@ -627,10 +628,14 @@ export default function NutritionScreen() {
         <View style={styles.offInfoCard}>
           <View style={styles.offInfoHeader}>
             <Ionicons name="globe-outline" size={18} color="#BB86FC" />
-            <Text style={styles.offInfoTitle}>OpenFoodFacts Search</Text>
+            <Text style={styles.offInfoTitle}>
+              {usdaProxyEnabled ? 'USDA + OpenFoodFacts Search' : 'OpenFoodFacts Search'}
+            </Text>
           </View>
           <Text style={styles.offInfoText}>
-            Best results come from exact product names or barcode digits.
+            {usdaProxyEnabled
+              ? 'Text search uses USDA first with OpenFoodFacts fallback. Barcode search starts with OpenFoodFacts.'
+              : 'Best results come from exact product names or barcode digits.'}
           </Text>
         </View>
       ) : null}

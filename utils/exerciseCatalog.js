@@ -10,6 +10,8 @@ const BODY_PART_CONFIG = {
 const TARGET_TO_MUSCLE = {
   core: { primary: ['Abs'], secondary: ['Obliques'] },
   biceps: { primary: ['Biceps'], secondary: ['Forearms'] },
+  brachialis: { primary: ['Brachialis'], secondary: ['Biceps', 'Forearms'] },
+  brachioradialis: { primary: ['Brachioradialis'], secondary: ['Forearms', 'Biceps'] },
   triceps: { primary: ['Triceps'], secondary: ['Shoulders'] },
   chest: { primary: ['Chest'], secondary: ['Triceps', 'Front Delts'] },
   shoulders: { primary: ['Shoulders'], secondary: ['Upper Back'] },
@@ -24,20 +26,240 @@ const TARGET_TO_MUSCLE = {
 
 export const EXERCISE_ALIASES = {
   'cable bar pushdown': 'cable triceps pushdown',
+  'face pulls': 'face pull',
   'machine chest press': 'chest press machine',
   'lat pulldown': 'lat pull down',
   'incline dumbell press': 'incline dumbbell press',
+  'machine shoulder press': 'shoulder press machine',
+  'lateral raise machine': 'lateral raise',
+  'machine lateral raise': 'lateral raise',
+  'lateral raises': 'lateral raise',
+  'dumbbell lateral raises': 'dumbbell lateral raise',
+  'shoulder press machine seated': 'shoulder press machine',
+  'seated shoulder press machine': 'shoulder press machine',
+  'shoulder press machine seat': 'shoulder press machine',
+  'shoulder press machine seaded': 'shoulder press machine',
+  'shoulder press (machine)': 'shoulder press machine',
 };
 
 function uniqueValues(values) {
   return Array.from(new Set((values || []).filter(Boolean)));
 }
 
+const SOURCE_PRIORITY = {
+  wger: 4,
+  snapshot: 3,
+  cache: 2,
+  seed: 1,
+  legacy: 0,
+};
+
 export function normalizeExerciseName(value = '') {
   return String(value)
     .toLowerCase()
+    .replace(/\bdumbell\b/g, 'dumbbell')
+    .replace(/\braises\b/g, 'raise')
+    .replace(/\bpresses\b/g, 'press')
+    .replace(/\bflies\b/g, 'fly')
+    .replace(/\bcrunches\b/g, 'crunch')
+    .replace(/\bshrugs\b/g, 'shrug')
+    .replace(/\bextensions\b/g, 'extension')
+    .replace(/\bcurls\b/g, 'curl')
+    .replace(/\brows\b/g, 'row')
+    .replace(/\bpulls\b/g, 'pull')
+    .replace(/\bpushdowns\b/g, 'pushdown')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+const ISO_DATE_KEY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const LOCALIZED_MONTHS = {
+  january: 0,
+  januarys: 0,
+  ocak: 0,
+  february: 1,
+  subat: 1,
+  şubat: 1,
+  march: 2,
+  mart: 2,
+  april: 3,
+  nisan: 3,
+  may: 4,
+  mayis: 4,
+  mayıs: 4,
+  june: 5,
+  haziran: 5,
+  july: 6,
+  temmuz: 6,
+  august: 7,
+  agustos: 7,
+  ağustos: 7,
+  september: 8,
+  eylul: 8,
+  eylül: 8,
+  october: 9,
+  ekim: 9,
+  november: 10,
+  kasim: 10,
+  kasım: 10,
+  december: 11,
+  aralik: 11,
+  aralık: 11,
+};
+
+function toDateKey(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeMonthToken(token = '') {
+  return String(token || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function parseLocalizedDateKey(text = '') {
+  const cleaned = String(text || '')
+    .trim()
+    .replace(/[,/]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  if (!cleaned) return null;
+
+  const rawTokens = cleaned.split(' ').filter(Boolean);
+  const tokens = rawTokens.map(normalizeMonthToken);
+  const dayToken = tokens.find(token => /^\d{1,2}$/.test(token));
+  const monthToken = tokens.find(token => LOCALIZED_MONTHS[token] !== undefined);
+  if (!dayToken || !monthToken) return null;
+
+  const parsedDay = Number(dayToken);
+  if (!Number.isFinite(parsedDay) || parsedDay < 1 || parsedDay > 31) return null;
+  const parsedMonth = LOCALIZED_MONTHS[monthToken];
+  const yearToken = tokens.find(token => /^\d{4}$/.test(token));
+  const parsedYear = Number(yearToken || new Date().getFullYear());
+  if (!Number.isFinite(parsedYear) || parsedYear < 1970) return null;
+
+  const candidate = new Date(parsedYear, parsedMonth, parsedDay);
+  if (!Number.isFinite(candidate.getTime())) return null;
+  if (
+    candidate.getFullYear() !== parsedYear
+    || candidate.getMonth() !== parsedMonth
+    || candidate.getDate() !== parsedDay
+  ) {
+    return null;
+  }
+
+  return toDateKey(candidate);
+}
+
+function resolveHistoryEntryDateKey(entry = {}) {
+  const candidates = [entry.dateISO, entry.date, entry.dateString];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (candidate instanceof Date) {
+      const key = toDateKey(candidate);
+      if (key) return key;
+      continue;
+    }
+
+    const rawText = String(candidate).trim();
+    if (!rawText) continue;
+    if (ISO_DATE_KEY_REGEX.test(rawText)) return rawText;
+
+    const localizedKey = parseLocalizedDateKey(rawText);
+    if (localizedKey) return localizedKey;
+
+    const parsed = new Date(rawText);
+    if (!Number.isFinite(parsed.getTime())) continue;
+
+    const hasYear = /\b\d{4}\b/.test(rawText);
+    if (!hasYear && parsed.getFullYear() < 2010) {
+      const withCurrentYear = new Date(`${rawText} ${new Date().getFullYear()}`);
+      if (Number.isFinite(withCurrentYear.getTime())) {
+        const withCurrentYearKey = toDateKey(withCurrentYear);
+        if (withCurrentYearKey) return withCurrentYearKey;
+      }
+    }
+
+    const parsedKey = toDateKey(parsed);
+    if (parsedKey) return parsedKey;
+  }
+
+  return null;
+}
+
+function getDaysSinceDateKey(dateKey = '') {
+  if (!ISO_DATE_KEY_REGEX.test(String(dateKey || ''))) return null;
+  const [year, month, day] = String(dateKey).split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (!Number.isFinite(date.getTime())) return null;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const value = Math.floor((today.getTime() - date.getTime()) / (24 * 60 * 60 * 1000));
+  return Math.max(0, value);
+}
+
+function buildTokenSignature(value = '') {
+  const normalized = normalizeExerciseName(value);
+  if (!normalized) return '';
+  const tokens = normalized
+    .split(' ')
+    .filter(Boolean)
+    .sort();
+  return tokens.join(' ');
+}
+
+function getCatalogPriority(item = {}) {
+  const source = String(item.source || 'legacy').toLowerCase();
+  return SOURCE_PRIORITY[source] ?? 0;
+}
+
+function pickPreferredCatalogEntry(current, incoming) {
+  if (!current) return incoming;
+  if (!incoming) return current;
+
+  const currentPriority = getCatalogPriority(current);
+  const incomingPriority = getCatalogPriority(incoming);
+  if (incomingPriority !== currentPriority) {
+    return incomingPriority > currentPriority ? incoming : current;
+  }
+
+  const currentMedia = (current.images?.length || 0) + (current.videos?.length || 0);
+  const incomingMedia = (incoming.images?.length || 0) + (incoming.videos?.length || 0);
+  if (incomingMedia !== currentMedia) {
+    return incomingMedia > currentMedia ? incoming : current;
+  }
+
+  const currentPrimaryCount = (current.primaryMuscles || []).length;
+  const incomingPrimaryCount = (incoming.primaryMuscles || []).length;
+  if (incomingPrimaryCount !== currentPrimaryCount) {
+    return incomingPrimaryCount > currentPrimaryCount ? incoming : current;
+  }
+
+  return incoming;
+}
+
+function resolveTargetConfig(targetKey = '') {
+  if (!targetKey) return {};
+  if (TARGET_TO_MUSCLE[targetKey]) return TARGET_TO_MUSCLE[targetKey];
+
+  const matched = Object.entries(TARGET_TO_MUSCLE)
+    .filter(([key]) => targetKey.includes(key))
+    .map(([, config]) => config);
+
+  if (!matched.length) return {};
+
+  return {
+    primary: uniqueValues(matched.flatMap(config => config.primary || [])),
+    secondary: uniqueValues(matched.flatMap(config => config.secondary || [])),
+  };
 }
 
 function inferBodyPart(primaryMuscles = [], fallbackBodyPart = '') {
@@ -78,13 +300,66 @@ function coerceMuscleName(value) {
     .join(' ');
 }
 
+function canonicalizeMuscleName(value) {
+  const raw = coerceMuscleName(value);
+  if (!raw) return null;
+
+  const normalized = normalizeExerciseName(raw);
+  if (!normalized) return raw;
+
+  if (normalized.includes('anterior deltoid') || normalized.includes('front delt')) return 'Front Delts';
+  if (normalized.includes('posterior deltoid') || normalized.includes('rear delt')) return 'Rear Delts';
+  if (normalized.includes('lateral deltoid') || normalized.includes('middle deltoid') || normalized.includes('medial deltoid')) return 'Shoulders';
+  if (normalized.includes('deltoid') || normalized.includes('shoulder')) return 'Shoulders';
+  if (normalized.includes('trapezius')) return 'Upper Back';
+  if (normalized.includes('latissimus')) return 'Lats';
+  if (normalized.includes('erector spinae')) return 'Lower Back';
+  if (normalized.includes('pectoralis')) return 'Chest';
+  if (normalized.includes('quadriceps')) return 'Quads';
+  if (normalized.includes('hamstring')) return 'Hamstrings';
+  if (normalized.includes('glute')) return 'Glutes';
+  if (normalized.includes('gastrocnemius') || normalized.includes('soleus')) return 'Calves';
+  if (normalized.includes('brachioradialis')) return 'Forearms';
+  if (normalized.includes('abdominis')) return 'Abs';
+
+  return raw;
+}
+
+function canonicalizeLoadMuscleName(value) {
+  const raw = coerceMuscleName(value);
+  if (!raw) return null;
+
+  const normalized = normalizeExerciseName(raw);
+  if (!normalized) return raw;
+
+  if (normalized.includes('delt') || normalized.includes('deltoid') || normalized.includes('shoulder')) return 'Shoulders';
+  if (normalized.includes('trapezius')) return 'Upper Back';
+  if (normalized.includes('latissimus')) return 'Lats';
+  if (normalized.includes('erector spinae')) return 'Lower Back';
+  if (normalized.includes('pectoralis')) return 'Chest';
+  if (normalized.includes('quadriceps')) return 'Quads';
+  if (normalized.includes('hamstring')) return 'Hamstrings';
+  if (normalized.includes('glute')) return 'Glutes';
+  if (normalized.includes('gastrocnemius') || normalized.includes('soleus')) return 'Calves';
+  if (normalized.includes('brachioradialis')) return 'Forearms';
+  if (normalized.includes('abdominis')) return 'Abs';
+
+  return raw;
+}
+
 export function normalizeLegacyExercise(exercise = {}) {
   const bodyPartKey = normalizeExerciseName(exercise.bodyPart);
   const targetKey = normalizeExerciseName(exercise.target);
   const bodyConfig = BODY_PART_CONFIG[bodyPartKey] || {};
-  const targetConfig = TARGET_TO_MUSCLE[targetKey] || {};
-  const primaryMuscles = uniqueValues([...(targetConfig.primary || []), ...(bodyConfig.primary || [])]);
-  const secondaryMuscles = uniqueValues([...(targetConfig.secondary || []), ...(bodyConfig.secondary || [])]);
+  const targetConfig = resolveTargetConfig(targetKey);
+  const hasTargetMapping = Boolean((targetConfig.primary || []).length || (targetConfig.secondary || []).length);
+  const primaryMuscles = uniqueValues(
+    hasTargetMapping ? (targetConfig.primary || []) : (bodyConfig.primary || [])
+  );
+  const secondaryMuscles = uniqueValues([
+    ...(hasTargetMapping ? (targetConfig.secondary || []) : (bodyConfig.secondary || [])),
+    ...(hasTargetMapping ? (bodyConfig.secondary || []) : []),
+  ]);
 
   return {
     id: `seed-${exercise.id}`,
@@ -105,12 +380,34 @@ export function buildSeedCatalog(rawExercises = []) {
   return rawExercises.map(normalizeLegacyExercise);
 }
 
-function resolveReferenceNames(values = [], lookup = new Map()) {
+function resolveReferenceNames(values = [], lookup = new Map(), options = {}) {
+  const normalizer = typeof options.normalizer === 'function' ? options.normalizer : null;
   return uniqueValues((values || []).map(value => {
-    if (typeof value === 'number') return lookup.get(value) || null;
-    if (typeof value === 'object') return coerceMuscleName(value.name || value.common_name || value);
-    return coerceMuscleName(value);
+    if (typeof value === 'number') {
+      const resolvedNumeric = lookup.get(value) || null;
+      return normalizer ? normalizer(resolvedNumeric) : resolvedNumeric;
+    }
+    const resolved = typeof value === 'object'
+      ? coerceMuscleName(value.name || value.common_name || value)
+      : coerceMuscleName(value);
+    return normalizer ? normalizer(resolved) : resolved;
   }));
+}
+
+function extractMediaUrl(mediaItem = {}) {
+  const candidateValues = [
+    mediaItem?.image,
+    mediaItem?.image_url,
+    mediaItem?.url,
+    mediaItem?.video,
+    mediaItem?.video_url,
+    mediaItem?.file,
+    mediaItem?.file_url,
+    mediaItem?.thumbnail,
+  ];
+
+  const resolved = candidateValues.find(value => typeof value === 'string' && value.trim());
+  return resolved ? resolved.trim() : null;
 }
 
 export function normalizeWgerExercise(item = {}, referenceMaps = {}) {
@@ -122,10 +419,14 @@ export function normalizeWgerExercise(item = {}, referenceMaps = {}) {
     ''
   );
   const primaryMuscles = uniqueValues(
-    resolveReferenceNames(item.muscles || item.muscles_primary || [], referenceMaps.muscles)
+    resolveReferenceNames(item.muscles || item.muscles_primary || [], referenceMaps.muscles, {
+      normalizer: canonicalizeMuscleName,
+    })
   );
   const secondaryMuscles = uniqueValues(
-    resolveReferenceNames(item.muscles_secondary || item.secondary_muscles || [], referenceMaps.muscles)
+    resolveReferenceNames(item.muscles_secondary || item.secondary_muscles || [], referenceMaps.muscles, {
+      normalizer: canonicalizeMuscleName,
+    })
   );
   const equipment = inferEquipmentFromName(
     item.name || item.exercise_name || item.original_name || '',
@@ -148,22 +449,49 @@ export function normalizeWgerExercise(item = {}, referenceMaps = {}) {
     primaryMuscles,
     secondaryMuscles,
     equipment,
-    images: (baseImages || []).map(image => image.image || image.url || image).filter(Boolean),
-    videos: (baseVideos || []).map(video => video.video || video.url || video).filter(Boolean),
+    images: uniqueValues((baseImages || []).map(mediaItem => extractMediaUrl(mediaItem)).filter(Boolean)),
+    videos: uniqueValues((baseVideos || []).map(mediaItem => extractMediaUrl(mediaItem)).filter(Boolean)),
     source: 'wger',
   };
 }
 
-export function buildExerciseLookup(catalog = []) {
+export function buildExerciseLookup(catalog = [], customAliases = {}) {
   const lookup = new Map();
+  const signatureCandidates = new Map();
+
   catalog.forEach(item => {
     const normalized = normalizeExerciseName(item.name);
     if (normalized) lookup.set(normalized, item);
+
+    const signature = buildTokenSignature(item.name);
+    if (!signature) return;
+    const current = signatureCandidates.get(signature);
+    if (!current) {
+      signatureCandidates.set(signature, item);
+      return;
+    }
+    if (current === null) return;
+    const preferred = pickPreferredCatalogEntry(current, item);
+    if (preferred.id !== current.id) {
+      signatureCandidates.set(signature, null);
+    } else if (current.id !== item.id) {
+      signatureCandidates.set(signature, null);
+    }
   });
 
-  Object.entries(EXERCISE_ALIASES).forEach(([alias, canonical]) => {
+  const mergedAliases = {
+    ...EXERCISE_ALIASES,
+    ...(customAliases || {}),
+  };
+
+  Object.entries(mergedAliases).forEach(([alias, canonical]) => {
     const target = lookup.get(normalizeExerciseName(canonical));
     if (target) lookup.set(normalizeExerciseName(alias), target);
+  });
+
+  signatureCandidates.forEach((item, signature) => {
+    if (!item) return;
+    lookup.set(`sig:${signature}`, item);
   });
 
   return lookup;
@@ -172,7 +500,10 @@ export function buildExerciseLookup(catalog = []) {
 function enrichExerciseItem(exercise, lookup) {
   const fallbackName = exercise?.name || '';
   const normalizedName = normalizeExerciseName(fallbackName);
-  const matched = lookup.get(normalizedName);
+  const signature = buildTokenSignature(fallbackName);
+  const matched =
+    lookup.get(normalizedName) ||
+    (signature ? lookup.get(`sig:${signature}`) : null);
 
   if (!matched) {
     return {
@@ -211,24 +542,59 @@ function enrichHistoryEntry(entry, lookup) {
   };
 }
 
-export function enrichWorkoutData({ routines = [], history = [] }, catalog = []) {
-  const lookup = buildExerciseLookup(catalog);
+export function enrichWorkoutData({ routines = [], history = [] }, catalog = [], options = {}) {
+  const lookup = buildExerciseLookup(catalog, options.customAliases || {});
   return {
     routines: routines.map(routine => enrichRoutine(routine, lookup)),
     history: history.map(entry => enrichHistoryEntry(entry, lookup)),
   };
 }
 
-export function mergeCatalogs(seedCatalog = [], remoteCatalog = []) {
-  if (!remoteCatalog.length) return seedCatalog;
+export function suggestCatalogMatches(query = '', catalog = [], limit = 3) {
+  const normalizedQuery = normalizeExerciseName(query);
+  if (!normalizedQuery) return [];
 
+  const queryTokens = normalizedQuery.split(' ').filter(Boolean);
+
+  const scored = (catalog || [])
+    .map(item => {
+      const normalizedName = normalizeExerciseName(item.name);
+      const nameTokens = normalizedName.split(' ').filter(Boolean);
+      const matchingTokens = queryTokens.filter(token => nameTokens.includes(token)).length;
+      const startsWith = normalizedName.startsWith(normalizedQuery);
+      const contains = normalizedName.includes(normalizedQuery);
+      const hasVideo = (item.videos || []).length > 0;
+      const hasImage = (item.images || []).length > 0;
+      const score =
+        (startsWith ? 6 : 0) +
+        (contains ? 4 : 0) +
+        matchingTokens * 2 +
+        (hasVideo ? 2 : 0) +
+        (hasImage ? 1 : 0);
+
+      return { item, score };
+    })
+    .filter(entry => entry.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.item.name.localeCompare(b.item.name, 'en', { sensitivity: 'base' });
+    })
+    .slice(0, limit)
+    .map(entry => entry.item);
+
+  return scored;
+}
+
+export function mergeCatalogs(seedCatalog = [], remoteCatalog = []) {
   const byName = new Map();
-  seedCatalog.forEach(item => {
-    byName.set(normalizeExerciseName(item.name), item);
+
+  [...(seedCatalog || []), ...(remoteCatalog || [])].forEach(item => {
+    const normalizedName = normalizeExerciseName(item?.name);
+    if (!normalizedName) return;
+    const current = byName.get(normalizedName);
+    byName.set(normalizedName, pickPreferredCatalogEntry(current, item));
   });
-  remoteCatalog.forEach(item => {
-    byName.set(normalizeExerciseName(item.name), item);
-  });
+
   return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
 }
 
@@ -240,12 +606,39 @@ function extractPaginatedResults(data) {
   return [];
 }
 
+const WGER_REQUEST_TIMEOUT_MS = 12 * 1000;
+const WGER_MAX_PAGES = 25;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = WGER_REQUEST_TIMEOUT_MS) {
+  if (typeof AbortController === 'undefined') {
+    return fetch(url, options);
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`wger request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function fetchPaginated(url) {
   const results = [];
   let nextUrl = url;
+  let pageCount = 0;
 
   while (nextUrl) {
-    const response = await fetch(nextUrl);
+    if (pageCount >= WGER_MAX_PAGES) {
+      throw new Error(`wger pagination limit reached (${WGER_MAX_PAGES} pages)`);
+    }
+
+    const response = await fetchWithTimeout(nextUrl);
     if (!response.ok) {
       throw new Error(`wger request failed: ${response.status}`);
     }
@@ -255,6 +648,7 @@ async function fetchPaginated(url) {
     results.push(...items);
     nextUrl = data?.next || null;
     if (Array.isArray(data)) nextUrl = null;
+    pageCount += 1;
   }
 
   return results;
@@ -273,14 +667,25 @@ async function fetchMediaMap(url, keyCandidates = ['exercise_base', 'exercise'])
   try {
     const rows = await fetchPaginated(url);
     const mediaMap = new Map();
+    const fallbackNestedKeys = ['id', 'exercise_base', 'exercise', 'exercise_id', 'exercise_base_id', 'exerciseBase', 'exerciseId'];
     rows.forEach(item => {
-      const key = keyCandidates.map(candidate => item?.[candidate]).find(Boolean);
+      const key = keyCandidates
+        .map(candidate => item?.[candidate])
+        .map(value => {
+          if (value === undefined || value === null || value === '') return null;
+          if (typeof value === 'object') {
+            const nested = fallbackNestedKeys.map(nestedKey => value?.[nestedKey]).find(Boolean);
+            return nested ? String(nested) : null;
+          }
+          return String(value);
+        })
+        .find(Boolean);
       if (!key) return;
       const normalizedKey = String(key);
       const list = mediaMap.get(normalizedKey) || [];
-      const mediaUrl = item.image || item.url || item.video;
+      const mediaUrl = extractMediaUrl(item);
       if (mediaUrl) list.push(mediaUrl);
-      mediaMap.set(normalizedKey, list);
+      mediaMap.set(normalizedKey, uniqueValues(list));
     });
     return mediaMap;
   } catch (error) {
@@ -293,8 +698,8 @@ export async function fetchWgerCatalog() {
     fetchReferenceMap('https://wger.de/api/v2/muscle/?limit=200', item => item.name_en || item.common_name || item.name),
     fetchReferenceMap('https://wger.de/api/v2/equipment/?limit=200', item => item.name),
     fetchReferenceMap('https://wger.de/api/v2/exercisecategory/?limit=200', item => item.name),
-    fetchMediaMap('https://wger.de/api/v2/exerciseimage/?limit=200'),
-    fetchMediaMap('https://wger.de/api/v2/exercisevideo/?limit=200'),
+    fetchMediaMap('https://wger.de/api/v2/exerciseimage/?limit=200', ['exercise_base', 'exercise', 'exercise_base_id', 'exercise_id']),
+    fetchMediaMap('https://wger.de/api/v2/exercisevideo/?limit=200', ['exercise_base', 'exercise', 'exercise_base_id', 'exercise_id']),
   ]);
 
   const referenceMaps = { muscles, equipment, categories, images, videos };
@@ -345,17 +750,25 @@ export function getExerciseVolumeScore(exercise = {}) {
 function collectCatalogMuscles(catalog = []) {
   return uniqueValues(
     (catalog || []).flatMap(item => [
-      ...(item.primaryMuscles || []),
-      ...(item.secondaryMuscles || []),
+      ...(item.primaryMuscles || []).map(canonicalizeLoadMuscleName),
+      ...(item.secondaryMuscles || []).map(canonicalizeLoadMuscleName),
     ])
   );
 }
 
 function getHistoryWithinDays(history = [], days = 7) {
-  const threshold = Date.now() - days * 24 * 60 * 60 * 1000;
+  const safeDays = Math.max(1, Number(days) || 1);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const windowStart = new Date(today);
+  windowStart.setDate(windowStart.getDate() - safeDays);
+  const todayKey = toDateKey(today);
+  const windowStartKey = toDateKey(windowStart);
+
   return history.filter(entry => {
-    const timestamp = new Date(entry.dateISO || entry.dateString || entry.date).getTime();
-    return Number.isFinite(timestamp) && timestamp >= threshold;
+    const dateKey = resolveHistoryEntryDateKey(entry);
+    if (!dateKey) return false;
+    return dateKey >= windowStartKey && dateKey <= todayKey;
   });
 }
 
@@ -377,9 +790,10 @@ export function computeMuscleDashboard(history = [], days = 7, catalog = []) {
 
   windowEntries.forEach(entry => {
     const workedThisSession = new Set();
+    const entryDateKey = resolveHistoryEntryDateKey(entry);
     (entry.exercises || []).forEach(exercise => {
-      const primaryMuscles = exercise.primaryMuscles || [];
-      const secondaryMuscles = exercise.secondaryMuscles || [];
+      const primaryMuscles = uniqueValues((exercise.primaryMuscles || []).map(canonicalizeLoadMuscleName));
+      const secondaryMuscles = uniqueValues((exercise.secondaryMuscles || []).map(canonicalizeLoadMuscleName));
       const mappingStatus = exercise.mappingStatus || 'unmapped';
       const completedSets = (exercise.sets || []).filter(set => set.isDone !== false).length;
 
@@ -403,7 +817,7 @@ export function computeMuscleDashboard(history = [], days = 7, catalog = []) {
         }
         muscleMap[muscle].directSets += completedSets;
         muscleMap[muscle].total += completedSets;
-        muscleMap[muscle].lastTrainedAt = entry.dateISO || entry.dateString || entry.date || muscleMap[muscle].lastTrainedAt;
+        muscleMap[muscle].lastTrainedAt = entryDateKey || muscleMap[muscle].lastTrainedAt;
         workedThisSession.add(muscle);
       });
       secondaryMuscles.forEach(muscle => {
@@ -419,7 +833,7 @@ export function computeMuscleDashboard(history = [], days = 7, catalog = []) {
         }
         muscleMap[muscle].assistedSets += completedSets;
         muscleMap[muscle].total += completedSets * 0.5;
-        muscleMap[muscle].lastTrainedAt = entry.dateISO || entry.dateString || entry.date || muscleMap[muscle].lastTrainedAt;
+        muscleMap[muscle].lastTrainedAt = entryDateKey || muscleMap[muscle].lastTrainedAt;
         workedThisSession.add(muscle);
       });
     });
@@ -435,33 +849,38 @@ export function computeMuscleDashboard(history = [], days = 7, catalog = []) {
     .map(entry => ({
       ...entry,
       total: Math.round(entry.total * 10) / 10,
-      lastTrainedDays: entry.lastTrainedAt
-        ? Math.max(0, Math.floor((Date.now() - new Date(entry.lastTrainedAt).getTime()) / (24 * 60 * 60 * 1000)))
-        : null,
+      lastTrainedDays: entry.lastTrainedAt ? getDaysSinceDateKey(entry.lastTrainedAt) : null,
     }))
-    .sort((a, b) => b.total - a.total);
+    .sort((a, b) => {
+      if (b.directSets !== a.directSets) return b.directSets - a.directSets;
+      return b.total - a.total;
+    });
 
+  const maxDirectScore = entries[0]?.directSets || 0;
   const maxScore = entries[0]?.total || 0;
-  const trainedEntries = entries.filter(entry => entry.total > 0);
+  const trainedEntries = entries.filter(entry => entry.directSets > 0);
   const neglectedPool = [...entries]
     .sort((a, b) => {
-      if ((a.total === 0) !== (b.total === 0)) return a.total === 0 ? -1 : 1;
+      if ((a.directSets === 0) !== (b.directSets === 0)) return a.directSets === 0 ? -1 : 1;
       if ((b.lastTrainedDays ?? -1) !== (a.lastTrainedDays ?? -1)) {
         return (b.lastTrainedDays ?? -1) - (a.lastTrainedDays ?? -1);
       }
+      if (a.directSets !== b.directSets) return a.directSets - b.directSets;
       return a.total - b.total;
     });
 
   return {
     muscles: entries.map(entry => ({
       ...entry,
-      intensity: maxScore ? Math.max(0.12, entry.total / maxScore) : 0,
+      intensity: maxDirectScore ? Math.max(0.12, entry.directSets / maxDirectScore) : 0,
+      directIntensity: maxDirectScore ? Math.max(0.12, entry.directSets / maxDirectScore) : 0,
+      assistedIntensity: maxScore ? Math.max(0.12, entry.total / maxScore) : 0,
     })),
     topMuscles: trainedEntries.slice(0, 3),
     neglectedMuscles: neglectedPool.slice(0, 3),
     trainedMuscleCount: trainedEntries.length,
     totalMuscles: entries.length,
-    totalSetUnits: Math.round(trainedEntries.reduce((sum, entry) => sum + entry.total, 0) * 10) / 10,
+    totalSetUnits: Math.round(trainedEntries.reduce((sum, entry) => sum + entry.directSets, 0) * 10) / 10,
     unmappedCount,
   };
 }

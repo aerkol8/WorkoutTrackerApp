@@ -51,7 +51,6 @@
   { "id": "25", "name": "Dumbell Lateral Raise", "bodyPart": "Shoulders", "target": "Deltoids" },
   { "id": "7", "name": "Dumbell Shoulder Press", "bodyPart": "Shoulders", "target": "Deltoids" },
   { "id": "33", "name": "Dumbell Shrugs", "bodyPart": "Shoulders", "target": "Traps" },
-  { "id": "31", "name": "Face Pulls", "bodyPart": "Shoulders", "target": "Rear Delts" },
   { "id": "8", "name": "Lateral Raise", "bodyPart": "Shoulders", "target": "Deltoids" },
   { "id": "40", "name": "Overhead Press", "bodyPart": "Shoulders", "target": "Deltoids" },
   { "id": "47", "name": "Rear Delt Machine", "bodyPart": "Shoulders", "target": "Rear Delts" },

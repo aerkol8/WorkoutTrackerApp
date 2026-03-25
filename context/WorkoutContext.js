@@ -9,18 +9,16 @@ import {
   buildSeedCatalog,
   computeMuscleDashboard,
   enrichWorkoutData,
-  fetchWgerCatalog,
   getRecentPRs,
   mergeCatalogs,
   normalizeExerciseName,
 } from '../utils/exerciseCatalog';
-import { EXERCISE_CACHE_TTL_MS, EXERCISE_CATALOG_CACHE_VERSION, STORAGE_KEYS } from '../utils/storage';
+import { EXERCISE_CATALOG_CACHE_VERSION, STORAGE_KEYS } from '../utils/storage';
 import { toLocalDateKey } from '../utils/date';
 
 const WorkoutContext = createContext(null);
 const seedCatalog = buildSeedCatalog(exerciseData);
 const snapshotCatalog = mergeCatalogs(seedCatalog, exerciseCatalogSnapshot);
-const MANUAL_CATALOG_REFRESH_COOLDOWN_MS = 30 * 1000;
 
 export const WorkoutProvider = ({ children }) => {
   const { user, isGuest } = useAuth();
@@ -31,14 +29,13 @@ export const WorkoutProvider = ({ children }) => {
   const [catalogMeta, setCatalogMeta] = useState({
     source: 'snapshot',
     syncedAt: null,
-    remoteAvailable: exerciseCatalogSnapshot.length > 0,
+    remoteAvailable: false,
     lastError: null,
   });
   const [dataLoaded, setDataLoaded] = useState(false);
   const [loadedUserId, setLoadedUserId] = useState(null);
   const lastSavedRef = useRef(null);
   const catalogRefreshInFlightRef = useRef(null);
-  const lastManualCatalogRefreshAtRef = useRef(0);
 
   const sanitizeAliasMap = (rawValue = {}) => {
     if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
@@ -67,25 +64,12 @@ export const WorkoutProvider = ({ children }) => {
       return catalogRefreshInFlightRef.current;
     }
 
-    const now = Date.now();
-    if (force && (now - lastManualCatalogRefreshAtRef.current) < MANUAL_CATALOG_REFRESH_COOLDOWN_MS) {
-      return {
-        success: true,
-        fromCache: true,
-        skipped: true,
-        retryAfterMs: MANUAL_CATALOG_REFRESH_COOLDOWN_MS - (now - lastManualCatalogRefreshAtRef.current),
-      };
-    }
-
-    if (force) {
-      lastManualCatalogRefreshAtRef.current = now;
-    }
-
     const task = (async () => {
       try {
         const cachedVersionRaw = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalogVersion);
         const cachedVersion = Number(cachedVersionRaw || 0);
         const isLegacyCache = cachedVersion !== EXERCISE_CATALOG_CACHE_VERSION;
+        const timestamp = new Date().toISOString();
 
         if (isLegacyCache) {
           await AsyncStorage.removeItem(STORAGE_KEYS.exerciseCatalog);
@@ -95,52 +79,52 @@ export const WorkoutProvider = ({ children }) => {
 
         const cachedCatalog = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalog);
         const cachedSyncedAt = await AsyncStorage.getItem(STORAGE_KEYS.exerciseCatalogSyncedAt);
-        const parsedCache = cachedCatalog ? JSON.parse(cachedCatalog) : [];
-        const mergedCache = mergeCatalogs(snapshotCatalog, parsedCache);
-        const syncedAt = cachedSyncedAt || null;
-        const isStale = !syncedAt || (Date.now() - new Date(syncedAt).getTime()) > EXERCISE_CACHE_TTL_MS;
-
-        if (!cachedCatalog) {
+        if (!cachedCatalog || force || isLegacyCache) {
           await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(snapshotCatalog));
+          await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogSyncedAt, timestamp);
           await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogVersion, String(EXERCISE_CATALOG_CACHE_VERSION));
+          setLibrary(snapshotCatalog);
+          setCatalogMeta({
+            source: 'snapshot',
+            syncedAt: timestamp,
+            remoteAvailable: false,
+            lastError: null,
+          });
+          return { success: true, fromCache: false };
         }
 
+        const parsedCache = JSON.parse(cachedCatalog);
+        const mergedCache = mergeCatalogs(snapshotCatalog, parsedCache);
         if (mergedCache.length) {
+          const nextSyncedAt = cachedSyncedAt || timestamp;
+          if (!cachedSyncedAt) {
+            await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogSyncedAt, nextSyncedAt);
+          }
           setLibrary(mergedCache);
           setCatalogMeta({
             source: parsedCache.length ? 'cache' : 'snapshot',
-            syncedAt,
-            remoteAvailable: mergedCache.some(item => item.source === 'wger'),
+            syncedAt: nextSyncedAt,
+            remoteAvailable: false,
             lastError: null,
           });
-        }
-
-        const shouldFetchRemote = force || isStale || !parsedCache.length;
-        if (!shouldFetchRemote) {
           return { success: true, fromCache: true };
         }
 
-        const remoteCatalog = await fetchWgerCatalog();
-        if (!remoteCatalog.length) {
-          return { success: true, fromCache: true };
-        }
-        const mergedRemote = mergeCatalogs(snapshotCatalog, remoteCatalog);
-        const timestamp = new Date().toISOString();
-        await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(mergedRemote));
+        await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalog, JSON.stringify(snapshotCatalog));
         await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogSyncedAt, timestamp);
         await AsyncStorage.setItem(STORAGE_KEYS.exerciseCatalogVersion, String(EXERCISE_CATALOG_CACHE_VERSION));
-        setLibrary(mergedRemote);
+        setLibrary(snapshotCatalog);
         setCatalogMeta({
-          source: 'wger',
+          source: 'snapshot',
           syncedAt: timestamp,
-          remoteAvailable: true,
+          remoteAvailable: false,
           lastError: null,
         });
         return { success: true, fromCache: false };
       } catch (error) {
         setCatalogMeta(prev => ({
           ...prev,
-          lastError: error.message || 'Exercise catalog sync failed',
+          lastError: error.message || 'Exercise catalog load failed',
         }));
         return { success: false, error: error.message };
       } finally {

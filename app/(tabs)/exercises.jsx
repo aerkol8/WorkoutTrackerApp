@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useWorkout } from '../../context/WorkoutContext';
 import { suggestCatalogMatches } from '../../utils/exerciseCatalog';
+import { resolveExerciseMediaCandidates, resolveExerciseMediaLink } from '../../utils/exerciseMedia';
 import { toLocalDateKey } from '../../utils/date';
 
 function formatSetUnits(value = 0) {
@@ -47,6 +48,80 @@ function getExerciseAccent(exercise = {}) {
   if (bodyPart.includes('arm')) return { start: '#3B355E', end: '#1A1730', icon: 'barbell-outline' };
   if (bodyPart.includes('abs')) return { start: '#3E4A23', end: '#1C2411', icon: 'apps-outline' };
   return { start: '#2E3548', end: '#171B25', icon: 'fitness-outline' };
+}
+
+function isGifMedia(url = '') {
+  return /\.gif($|[?#])/i.test(String(url || '').trim());
+}
+
+function getExerciseMediaCounts(exercise = {}) {
+  return {
+    imageCount: Math.max((exercise.images || []).length, (exercise.imageRefs || []).length),
+    videoCount: Math.max((exercise.videos || []).length, (exercise.videoRefs || []).length),
+  };
+}
+
+function buildMediaItems(urls = [], refs = []) {
+  const size = Math.max(urls.length, refs.length);
+  return Array.from({ length: size }, (_, index) => ({
+    key: refs[index] || urls[index] || `media-${index}`,
+    uri: urls[index] || '',
+    mediaRef: refs[index] || urls[index] || '',
+  })).filter(item => item.uri || item.mediaRef);
+}
+
+function ResolvedMediaImage({ uri, mediaRef, style, resizeMode = 'cover', fallback = null }) {
+  const candidates = useMemo(
+    () => resolveExerciseMediaCandidates(mediaRef, uri),
+    [mediaRef, uri]
+  );
+  const [candidateIndex, setCandidateIndex] = useState(0);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setCandidateIndex(0);
+    setFailed(false);
+  }, [candidates.join('|')]);
+
+  const activeUri = candidates[candidateIndex];
+  if (!activeUri || failed) return fallback;
+
+  return (
+    <Image
+      key={activeUri}
+      source={{ uri: activeUri }}
+      style={style}
+      resizeMode={resizeMode}
+      onError={() => {
+        if (candidateIndex < candidates.length - 1) {
+          setCandidateIndex(prev => prev + 1);
+          return;
+        }
+        setFailed(true);
+      }}
+    />
+  );
+}
+
+function MediaUnavailableFallback({
+  title = 'Media unavailable',
+  subtitle = 'Current network mode cannot reach local exercise media.',
+  style,
+  compact = false,
+}) {
+  return (
+    <View style={[styles.mediaUnavailableFallback, compact && styles.mediaUnavailableFallbackCompact, style]}>
+      <View style={styles.mediaUnavailableIconWrap}>
+        <Ionicons name="image-outline" size={compact ? 18 : 28} color="#C8D1E3" />
+      </View>
+      <Text style={[styles.mediaUnavailableTitle, compact && styles.mediaUnavailableTitleCompact]}>
+        {title}
+      </Text>
+      {!compact ? (
+        <Text style={styles.mediaUnavailableSubtitle}>{subtitle}</Text>
+      ) : null}
+    </View>
+  );
 }
 
 const FRONT_BODY_LEFT = [
@@ -169,16 +244,14 @@ function getRhythmCellTone(item, maxSetUnits = 0) {
 }
 
 function getMediaAvailability(exercise = {}) {
-  const imageCount = (exercise.images || []).length;
-  const videoCount = (exercise.videos || []).length;
+  const { imageCount, videoCount } = getExerciseMediaCounts(exercise);
   const source = String(exercise.source || '').toLowerCase();
 
   if (imageCount > 0 && videoCount > 0) return 'Image + video available';
   if (videoCount > 0) return 'Video available (generated poster for image)';
   if (imageCount > 0) return 'Image available';
   if (source === 'seed') return 'Generated visual only (legacy seed)';
-  if (source === 'snapshot') return 'Generated visual only (snapshot has no media)';
-  if (source === 'wger') return 'Generated visual only (wger record has no media)';
+  if (source === 'snapshot') return 'Generated visual only (no hosted media configured)';
   return 'Generated visual only';
 }
 
@@ -384,6 +457,7 @@ export default function ExercisesScreen() {
   const [selectedBodyPart, setSelectedBodyPart] = useState('all');
   const [selectedMediaFilter, setSelectedMediaFilter] = useState('all');
   const [selectedExercise, setSelectedExercise] = useState(null);
+  const [selectedMediaPreview, setSelectedMediaPreview] = useState(null);
   const {
     library,
     history,
@@ -409,9 +483,10 @@ export default function ExercisesScreen() {
           (exercise.primaryMuscles || []).some(muscle => muscle.toLowerCase().includes(q)) ||
           (exercise.equipment || []).some(item => item.toLowerCase().includes(q));
         const matchesBodyPart = selectedBodyPart === 'all' || exercise.bodyPart === selectedBodyPart;
+        const { imageCount, videoCount } = getExerciseMediaCounts(exercise);
         const matchesMedia = selectedMediaFilter === 'all'
-          || (selectedMediaFilter === 'video' && (exercise.videos || []).length > 0)
-          || (selectedMediaFilter === 'image' && (exercise.images || []).length > 0);
+          || (selectedMediaFilter === 'video' && videoCount > 0)
+          || (selectedMediaFilter === 'image' && imageCount > 0);
         return matchesQuery && matchesBodyPart && matchesMedia;
       })
       .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }))
@@ -515,7 +590,8 @@ export default function ExercisesScreen() {
     Alert.alert('Mapped', `"${legacyName}" now maps to "${result.canonical}".`);
   };
 
-  const openMediaLink = async (url) => {
+  const openMediaLink = async (mediaItem) => {
+    const url = resolveExerciseMediaLink(mediaItem?.mediaRef || mediaItem, mediaItem?.uri || '');
     if (!url) return;
     try {
       await Linking.openURL(url);
@@ -526,6 +602,10 @@ export default function ExercisesScreen() {
 
   const selectedExerciseAccent = getExerciseAccent(selectedExercise || {});
   const selectedExerciseMediaStatus = getMediaAvailability(selectedExercise || {});
+  const selectedImageItems = buildMediaItems(selectedExercise?.images || [], selectedExercise?.imageRefs || []);
+  const selectedVideoItems = buildMediaItems(selectedExercise?.videos || [], selectedExercise?.videoRefs || []);
+  const inlineGifPreviews = selectedVideoItems.filter(video => isGifMedia(video.mediaRef || video.uri));
+  const externalVideoLinks = selectedVideoItems.filter(video => !isGifMedia(video.mediaRef || video.uri));
 
   return (
     <View style={styles.container}>
@@ -563,7 +643,7 @@ export default function ExercisesScreen() {
               </View>
               <TouchableOpacity style={styles.syncBtn} onPress={() => refreshExerciseCatalog(true)}>
                 <Ionicons name="sync-outline" size={18} color="#BB86FC" />
-                <Text style={styles.syncBtnText}>Refresh</Text>
+                <Text style={styles.syncBtnText}>Reload</Text>
               </TouchableOpacity>
             </View>
 
@@ -572,23 +652,21 @@ export default function ExercisesScreen() {
                 <Text style={styles.heroPillText}>{library.length} exercises</Text>
               </View>
               <View style={styles.heroPill}>
-                <Text style={styles.heroPillText}>sync {syncedText}</Text>
+                <Text style={styles.heroPillText}>loaded {syncedText}</Text>
               </View>
               <View style={styles.heroPill}>
                 <Text style={styles.heroPillText}>
                   {catalogMeta.source === 'snapshot'
-                    ? 'snapshot ready'
+                    ? 'embedded catalog'
                     : catalogMeta.source === 'cache'
-                      ? 'cached sync'
-                      : catalogMeta.source === 'wger'
-                        ? 'manual sync'
+                      ? 'cached catalog'
                         : 'catalog ready'}
                 </Text>
               </View>
             </View>
 
             {catalogMeta.lastError ? (
-              <Text style={styles.warningText}>Last sync issue: {catalogMeta.lastError}</Text>
+              <Text style={styles.warningText}>Catalog load issue: {catalogMeta.lastError}</Text>
             ) : null}
             {dashboard30.unmappedCount > 0 ? (
               <View style={styles.warningBadge}>
@@ -898,19 +976,64 @@ export default function ExercisesScreen() {
         <View style={styles.modalContainer}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>{selectedExercise?.name}</Text>
-            <TouchableOpacity onPress={() => setSelectedExercise(null)}>
+            <TouchableOpacity
+              onPress={() => {
+                setSelectedExercise(null);
+                setSelectedMediaPreview(null);
+              }}
+            >
               <Ionicons name="close-circle" size={32} color="#CF6679" />
             </TouchableOpacity>
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false}>
-            {selectedExercise?.images?.[0] ? (
+            {selectedImageItems[0] ? (
               <>
-                <Image source={{ uri: selectedExercise.images[0] }} style={styles.detailImage} resizeMode="cover" />
-                {selectedExercise.images.length > 1 ? (
+                <TouchableOpacity
+                  activeOpacity={0.92}
+                  style={styles.detailImageFrame}
+                  onPress={() => setSelectedMediaPreview({
+                    uri: selectedImageItems[0].uri,
+                    mediaRef: selectedImageItems[0].mediaRef,
+                    label: selectedExercise?.name || 'Exercise image',
+                  })}
+                >
+                  <ResolvedMediaImage
+                    uri={selectedImageItems[0].uri}
+                    mediaRef={selectedImageItems[0].mediaRef}
+                    style={styles.detailImage}
+                    resizeMode="contain"
+                    fallback={(
+                      <MediaUnavailableFallback
+                        style={styles.detailImage}
+                        title="Image unavailable"
+                        subtitle="Tunnel/mobile data cannot reach local exercise media. Generated visuals still work."
+                      />
+                    )}
+                  />
+                </TouchableOpacity>
+                <Text style={styles.detailMediaHint}>Tap image to expand</Text>
+                {selectedImageItems.length > 1 ? (
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.mediaRail}>
-                    {selectedExercise.images.slice(1).map(image => (
-                      <Image key={image} source={{ uri: image }} style={styles.detailThumb} resizeMode="cover" />
+                    {selectedImageItems.slice(1).map(image => (
+                      <TouchableOpacity
+                        key={image.key}
+                        activeOpacity={0.9}
+                        style={styles.detailThumbFrame}
+                        onPress={() => setSelectedMediaPreview({
+                          uri: image.uri,
+                          mediaRef: image.mediaRef,
+                          label: selectedExercise?.name || 'Exercise image',
+                        })}
+                      >
+                        <ResolvedMediaImage
+                          uri={image.uri}
+                          mediaRef={image.mediaRef}
+                          style={styles.detailThumb}
+                          resizeMode="contain"
+                          fallback={<MediaUnavailableFallback style={styles.detailThumb} compact />}
+                        />
+                      </TouchableOpacity>
                     ))}
                   </ScrollView>
                 ) : null}
@@ -953,25 +1076,60 @@ export default function ExercisesScreen() {
             </View>
 
             <Text style={styles.detailLabel}>Videos</Text>
-            {(selectedExercise?.videos || []).length ? (
-              <View style={styles.videoList}>
-                {selectedExercise.videos.map(video => (
-                  <TouchableOpacity key={video} style={styles.videoButton} onPress={() => openMediaLink(video)}>
-                    <Ionicons name="play-circle-outline" size={18} color="#4ECDC4" />
-                    <Text style={styles.videoButtonText} numberOfLines={1}>Open video</Text>
+            {inlineGifPreviews.length ? (
+              <View style={styles.inlineVideoList}>
+                {inlineGifPreviews.map(video => (
+                  <TouchableOpacity
+                    key={video.key}
+                    activeOpacity={0.92}
+                    style={styles.inlineVideoCard}
+                    onPress={() => setSelectedMediaPreview({
+                      uri: video.uri,
+                      mediaRef: video.mediaRef,
+                      label: `${selectedExercise?.name || 'Exercise'} GIF`,
+                    })}
+                  >
+                    <ResolvedMediaImage
+                      uri={video.uri}
+                      mediaRef={video.mediaRef}
+                      style={styles.inlineVideoPreview}
+                      resizeMode="contain"
+                      fallback={(
+                        <MediaUnavailableFallback
+                          style={styles.inlineVideoPreview}
+                          title="GIF unavailable"
+                          subtitle="This preview needs local media access."
+                        />
+                      )}
+                    />
+                    <View style={styles.inlineVideoMeta}>
+                      <Ionicons name="sparkles-outline" size={16} color="#4ECDC4" />
+                      <Text style={styles.inlineVideoText}>GIF preview in app</Text>
+                    </View>
                   </TouchableOpacity>
                 ))}
               </View>
-            ) : (
+            ) : null}
+            {externalVideoLinks.length ? (
+              <View style={styles.videoList}>
+                {externalVideoLinks.map(video => (
+                  <TouchableOpacity key={video.key} style={styles.videoButton} onPress={() => openMediaLink(video)}>
+                    <Ionicons name="open-outline" size={18} color="#4ECDC4" />
+                    <Text style={styles.videoButtonText} numberOfLines={1}>Open external video</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+            {!inlineGifPreviews.length && !externalVideoLinks.length ? (
               <Text style={styles.detailEmptyText}>No video URL available for this exercise.</Text>
-            )}
+            ) : null}
 
             <View style={styles.detailStatsCard}>
               <Text style={styles.detailStatsLabel}>Source</Text>
               <Text style={styles.detailStatsValue}>{selectedExercise?.source?.toUpperCase()}</Text>
               <Text style={styles.detailStatsLabel}>Media</Text>
               <Text style={styles.detailStatsValue}>
-                {(selectedExercise?.images?.length || 0)} images • {(selectedExercise?.videos?.length || 0)} videos
+                {selectedImageItems.length} images • {selectedVideoItems.length} videos
               </Text>
               <Text style={styles.detailStatsLabel}>Status</Text>
               <Text style={styles.detailStatsValue}>
@@ -979,6 +1137,33 @@ export default function ExercisesScreen() {
               </Text>
             </View>
           </ScrollView>
+        </View>
+      </Modal>
+
+      <Modal visible={Boolean(selectedMediaPreview)} animationType="fade" transparent>
+        <View style={styles.previewModal}>
+          <TouchableOpacity style={styles.previewBackdrop} activeOpacity={1} onPress={() => setSelectedMediaPreview(null)} />
+          <View style={styles.previewContent}>
+            <TouchableOpacity style={styles.previewCloseButton} onPress={() => setSelectedMediaPreview(null)}>
+              <Ionicons name="close-circle" size={34} color="#F4F1FF" />
+            </TouchableOpacity>
+            {selectedMediaPreview?.uri || selectedMediaPreview?.mediaRef ? (
+              <ResolvedMediaImage
+                uri={selectedMediaPreview.uri}
+                mediaRef={selectedMediaPreview.mediaRef}
+                style={styles.previewImage}
+                resizeMode="contain"
+                fallback={(
+                  <MediaUnavailableFallback
+                    style={styles.previewImage}
+                    title="Preview unavailable"
+                    subtitle="Current network mode cannot reach local exercise media."
+                  />
+                )}
+              />
+            ) : null}
+            <Text style={styles.previewCaption}>{selectedMediaPreview?.label || 'Media preview'}</Text>
+          </View>
         </View>
       </Modal>
     </View>
@@ -1900,12 +2085,27 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     flex: 1,
   },
+  detailImageFrame: {
+    width: '100%',
+    height: 320,
+    borderRadius: 22,
+    backgroundColor: '#171A22',
+    borderWidth: 1,
+    borderColor: '#232A37',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
   detailImage: {
     width: '100%',
-    height: 220,
-    borderRadius: 22,
-    backgroundColor: '#1E1E1E',
-    marginBottom: 18,
+    height: '100%',
+    backgroundColor: '#171A22',
+  },
+  detailMediaHint: {
+    color: '#8E9AAF',
+    fontSize: 12,
+    marginTop: 10,
+    marginBottom: 16,
   },
   mediaRail: {
     gap: 10,
@@ -1913,11 +2113,19 @@ const styles = StyleSheet.create({
     marginTop: -4,
     marginBottom: 8,
   },
-  detailThumb: {
+  detailThumbFrame: {
     width: 96,
     height: 96,
     borderRadius: 16,
-    backgroundColor: '#1E1E1E',
+    overflow: 'hidden',
+    backgroundColor: '#171A22',
+    borderWidth: 1,
+    borderColor: '#232A37',
+  },
+  detailThumb: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#171A22',
   },
   detailImageFallback: {
     width: '100%',
@@ -1986,6 +2194,32 @@ const styles = StyleSheet.create({
   videoList: {
     gap: 10,
   },
+  inlineVideoList: {
+    gap: 12,
+  },
+  inlineVideoCard: {
+    backgroundColor: '#171A22',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#263041',
+    overflow: 'hidden',
+  },
+  inlineVideoPreview: {
+    width: '100%',
+    height: 260,
+    backgroundColor: '#10131A',
+  },
+  inlineVideoMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  inlineVideoText: {
+    color: '#DCEBEB',
+    fontWeight: '700',
+  },
   videoButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2022,5 +2256,79 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginBottom: 14,
     marginTop: 4,
+  },
+  previewModal: {
+    flex: 1,
+    backgroundColor: '#000000E6',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  previewBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  previewContent: {
+    width: '100%',
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 54,
+    paddingBottom: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  previewCloseButton: {
+    position: 'absolute',
+    top: 54,
+    right: 18,
+    zIndex: 2,
+  },
+  previewImage: {
+    width: '100%',
+    height: '78%',
+  },
+  mediaUnavailableFallback: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#171A22',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  mediaUnavailableFallbackCompact: {
+    paddingHorizontal: 8,
+  },
+  mediaUnavailableIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#334057',
+    backgroundColor: '#1D2431',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  mediaUnavailableTitle: {
+    color: '#F2F5FB',
+    fontSize: 16,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  mediaUnavailableTitleCompact: {
+    fontSize: 10,
+    marginTop: -2,
+  },
+  mediaUnavailableSubtitle: {
+    color: '#9CA8BD',
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginTop: 8,
+    maxWidth: 240,
+  },
+  previewCaption: {
+    color: '#F4F1FF',
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 14,
   },
 });

@@ -18,7 +18,7 @@ A comprehensive fitness tracking mobile application built with React Native and 
 
 ### 🏋️ Workout Tracking
 - **Custom Routines** - Create personalized workout routines (Push Day, Leg Day, etc.)
-- **Exercise Library** - Browse a cached exercise catalog with muscle, equipment, and source metadata
+- **Exercise Library** - Browse a bundled exercise catalog with muscle, equipment, media, and source metadata
 - **Live Workout Timer** - Track workout duration in real-time
 - **Set Tracking** - Log weight, reps, and mark sets as completed
 - **Rest Timer** - Configurable rest timer with push notifications
@@ -138,12 +138,20 @@ WorkoutTrackerApp/
    - Worker template: [`workers/usda-proxy/worker.js`](workers/usda-proxy/worker.js)
    - Deploy steps: [`workers/usda-proxy/README.md`](workers/usda-proxy/README.md)
 
-5. **Start the development server**
+5. **Configure optional exercise media base URL**
+   ```env
+   EXPO_PUBLIC_EXERCISE_MEDIA_BASE_URL=https://<your-static-host>
+   ```
+   - Exercise snapshot records can include relative `images/...` and `videos/...` paths
+   - Point this URL at a static host that serves those folders
+   - If omitted, the app still works and falls back to generated exercise visuals when no absolute media URL is present
+
+6. **Start the development server**
    ```bash
    npx expo start
    ```
 
-6. **Run on device/emulator**
+7. **Run on device/emulator**
    - Scan QR code with Expo Go (iOS/Android)
    - Press `i` for iOS simulator
    - Press `a` for Android emulator
@@ -220,7 +228,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **USDA FoodData Central** - Primary text search via optional proxy URL (Cloudflare Worker template included)
 - **OpenFoodFacts API** - Global packaged-food and barcode fallback
-- **wger API** - Remote exercise catalog sync
+- **Bundled Exercise Snapshot** - Local exercise catalog with optional hosted media assets
 - **Firebase Firestore** - Real-time database for user data
 - **Firebase Authentication** - Secure user authentication
 - **Expo Notifications** - Push notifications for workout timers

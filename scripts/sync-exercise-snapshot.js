@@ -1,7 +1,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const OUTPUT_PATH = path.resolve(__dirname, '../data/exerciseCatalogSnapshot.json');
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const OUTPUT_PATH = path.join(PROJECT_ROOT, 'data', 'exerciseCatalogSnapshot.json');
+const ALIAS_OUTPUT_PATH = path.join(PROJECT_ROOT, 'data', 'exerciseAliases.generated.json');
+const SEED_PATH = path.join(PROJECT_ROOT, 'data', 'exercises.json');
+const DEFAULT_EXTERNAL_DATASET_PATH = '/tmp/exercises-dataset-analysis/data/exercises.json';
+const STOP_WORDS = new Set(['a', 'an', 'and', 'the', 'of', 'with', 'to']);
+
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function writeJson(filePath, value) {
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
 
 function uniqueValues(values) {
   return Array.from(new Set((values || []).filter(Boolean)));
@@ -10,260 +23,388 @@ function uniqueValues(values) {
 function normalizeExerciseName(value = '') {
   return String(value)
     .toLowerCase()
+    .replace(/\bdumbell\b/g, 'dumbbell')
+    .replace(/\bbicep\b/g, 'biceps')
+    .replace(/\braises\b/g, 'raise')
+    .replace(/\bpresses\b/g, 'press')
+    .replace(/\bflies\b/g, 'fly')
+    .replace(/\bcrunches\b/g, 'crunch')
+    .replace(/\bshrugs\b/g, 'shrug')
+    .replace(/\bextensions\b/g, 'extension')
+    .replace(/\bcurls\b/g, 'curl')
+    .replace(/\brows\b/g, 'row')
+    .replace(/\bpulls\b/g, 'pull')
+    .replace(/\bpushdowns\b/g, 'pushdown')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
 
-function inferBodyPart(primaryMuscles = [], fallbackBodyPart = '') {
-  const first = primaryMuscles[0]?.toLowerCase();
-  if (first?.includes('chest')) return 'Chest';
-  if (first?.includes('lat') || first?.includes('back')) return 'Back';
-  if (first?.includes('quad') || first?.includes('hamstring') || first?.includes('glute') || first?.includes('calf')) return 'Legs';
-  if (first?.includes('shoulder') || first?.includes('delt')) return 'Shoulders';
-  if (first?.includes('biceps') || first?.includes('triceps') || first?.includes('forearm')) return 'Arms';
-  if (first?.includes('abs') || first?.includes('oblique')) return 'Abs';
-  return fallbackBodyPart || 'Full Body';
+function tokenize(value = '') {
+  return normalizeExerciseName(value)
+    .split(' ')
+    .filter(token => token && !STOP_WORDS.has(token));
 }
 
-function inferTarget(primaryMuscles = [], fallbackTarget = '') {
-  return primaryMuscles[0] || fallbackTarget || 'General';
+function buildSignature(value = '') {
+  return tokenize(value).sort().join(' ');
 }
 
-function inferEquipmentFromName(name = '', fallback = []) {
-  const normalized = normalizeExerciseName(name);
-  const equipment = [...fallback];
-  if (normalized.includes('barbell')) equipment.push('Barbell');
-  if (normalized.includes('dumbbell')) equipment.push('Dumbbell');
-  if (normalized.includes('cable')) equipment.push('Cable');
-  if (normalized.includes('machine')) equipment.push('Machine');
-  if (normalized.includes('bodyweight') || normalized.includes('plank') || normalized.includes('push up')) equipment.push('Bodyweight');
-  if (normalized.includes('smith')) equipment.push('Smith Machine');
-  return uniqueValues(equipment.length ? equipment : ['Bodyweight']);
+function toDisplayName(value = '') {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/(^|[\s(/-])([a-z])/g, (_, prefix, char) => `${prefix}${char.toUpperCase()}`)
+    .replace(/\bSmr\b/g, 'SMR')
+    .replace(/\bEz\b/g, 'EZ')
+    .replace(/\bIi\b/g, 'II')
+    .replace(/\bIii\b/g, 'III');
 }
 
-function coerceName(value) {
-  if (!value) return null;
-  if (typeof value === 'object') {
-    return coerceName(value.name || value.name_en || value.name_original || value.common_name || value.exercise_base);
+function toBodyPartFamily(value = '') {
+  const normalized = normalizeExerciseName(value);
+  if (!normalized) return '';
+  if (normalized.includes('arm')) return 'arms';
+  if (normalized.includes('back')) return 'back';
+  if (normalized.includes('chest')) return 'chest';
+  if (normalized.includes('shoulder') || normalized.includes('delt')) return 'shoulders';
+  if (
+    normalized.includes('leg')
+    || normalized.includes('quad')
+    || normalized.includes('hamstring')
+    || normalized.includes('glute')
+    || normalized.includes('calf')
+    || normalized.includes('adductor')
+    || normalized.includes('abductor')
+  ) {
+    return 'legs';
   }
-  return String(value)
-    .split(/[_-]/)
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
+  if (normalized.includes('waist') || normalized.includes('core') || normalized.includes('abs') || normalized.includes('oblique')) return 'abs';
+  if (normalized.includes('cardio')) return 'cardio';
+  if (normalized.includes('neck')) return 'neck';
+  return normalized;
 }
 
-function resolveReferenceNames(values = [], lookup = new Map()) {
-  return uniqueValues((values || []).map(value => {
-    if (typeof value === 'number') return lookup.get(value) || null;
-    if (typeof value === 'object') return coerceName(value.name || value.common_name || value);
-    return coerceName(value);
-  }));
+function toTargetFamily(value = '') {
+  const normalized = normalizeExerciseName(value);
+  if (!normalized) return '';
+  if (normalized.includes('pectoral') || normalized.includes('chest')) return 'chest';
+  if (normalized.includes('biceps')) return 'biceps';
+  if (normalized.includes('triceps')) return 'triceps';
+  if (normalized.includes('brachialis')) return 'brachialis';
+  if (normalized.includes('brachioradialis') || normalized.includes('forearm')) return 'forearms';
+  if (normalized.includes('lat')) return 'lats';
+  if (normalized.includes('upper back') || normalized.includes('mid back') || normalized.includes('trap')) return 'upper back';
+  if (normalized.includes('lower back')) return 'lower back';
+  if (normalized.includes('glute')) return 'glutes';
+  if (normalized.includes('hamstring')) return 'hamstrings';
+  if (normalized.includes('quad')) return 'quads';
+  if (normalized.includes('calf')) return 'calves';
+  if (normalized.includes('delt') || normalized.includes('shoulder')) return 'shoulders';
+  if (normalized.includes('abs') || normalized.includes('core') || normalized.includes('oblique')) return 'abs';
+  if (normalized.includes('adductor')) return 'adductors';
+  if (normalized.includes('abductor')) return 'abductors';
+  if (normalized.includes('cardiovascular')) return 'cardio';
+  return normalized;
 }
 
-function extractMediaUrl(mediaItem = {}) {
-  const candidateValues = [
-    mediaItem?.image,
-    mediaItem?.image_url,
-    mediaItem?.url,
-    mediaItem?.video,
-    mediaItem?.video_url,
-    mediaItem?.file,
-    mediaItem?.file_url,
-    mediaItem?.thumbnail,
-  ];
-
-  const resolved = candidateValues.find(value => typeof value === 'string' && value.trim());
-  return resolved ? resolved.trim() : null;
+function normalizeBodyPart(value = '') {
+  const family = toBodyPartFamily(value);
+  if (family === 'arms') return 'Arms';
+  if (family === 'back') return 'Back';
+  if (family === 'chest') return 'Chest';
+  if (family === 'shoulders') return 'Shoulders';
+  if (family === 'legs') return 'Legs';
+  if (family === 'abs') return 'Abs';
+  if (family === 'cardio') return 'Cardio';
+  if (family === 'neck') return 'Neck';
+  return toDisplayName(value || 'General');
 }
 
-function normalizeWgerExercise(item = {}, referenceMaps = {}) {
-  const sourceId = String(
-    item.exercise_base ||
-    item.exerciseBase ||
-    item.base_id ||
-    item.id ||
-    ''
-  );
-  const primaryMuscles = uniqueValues(
-    resolveReferenceNames(item.muscles || item.muscles_primary || [], referenceMaps.muscles)
-  );
-  const secondaryMuscles = uniqueValues(
-    resolveReferenceNames(item.muscles_secondary || item.secondary_muscles || [], referenceMaps.muscles)
-  );
-  const equipment = inferEquipmentFromName(
-    item.name || item.exercise_name || item.original_name || '',
-    resolveReferenceNames(item.equipment || [], referenceMaps.equipment)
-  );
-  const baseImages = item.images || referenceMaps.images?.get(sourceId) || [];
-  const baseVideos = item.videos || referenceMaps.videos?.get(sourceId) || [];
-  const categoryName =
-    item.category?.name ||
-    referenceMaps.categories?.get(item.category) ||
-    referenceMaps.categories?.get(item.category_id) ||
-    '';
+function normalizeEquipment(value = '') {
+  const normalized = normalizeExerciseName(value);
+  if (!normalized) return 'Bodyweight';
+  if (normalized === 'body weight') return 'Bodyweight';
+  if (normalized === 'leverage machine') return 'Machine';
+  if (normalized === 'smith machine') return 'Smith Machine';
+  if (normalized === 'ez barbell') return 'EZ Barbell';
+  if (normalized === 'medicine ball') return 'Medicine Ball';
+  if (normalized === 'stability ball') return 'Stability Ball';
+  if (normalized === 'foam roll') return 'Foam Roll';
+  if (normalized === 'roller') return 'Roller';
+  if (normalized === 'assisted') return 'Assisted';
+  if (normalized === 'weighted') return 'Weighted';
+  return toDisplayName(normalized);
+}
+
+function normalizeMuscleName(value = '') {
+  const family = toTargetFamily(value);
+  if (!family) return null;
+  if (family === 'chest') return 'Chest';
+  if (family === 'biceps') return 'Biceps';
+  if (family === 'triceps') return 'Triceps';
+  if (family === 'brachialis') return 'Brachialis';
+  if (family === 'forearms') return 'Forearms';
+  if (family === 'lats') return 'Lats';
+  if (family === 'upper back') return 'Upper Back';
+  if (family === 'lower back') return 'Lower Back';
+  if (family === 'glutes') return 'Glutes';
+  if (family === 'hamstrings') return 'Hamstrings';
+  if (family === 'quads') return 'Quads';
+  if (family === 'calves') return 'Calves';
+  if (family === 'shoulders') return 'Shoulders';
+  if (family === 'abs') return 'Abs';
+  if (family === 'adductors') return 'Adductors';
+  if (family === 'abductors') return 'Abductors';
+  if (family === 'cardio') return 'Cardio';
+  return toDisplayName(value);
+}
+
+function normalizeExternalExercise(item = {}) {
+  const name = toDisplayName(item.name || '');
+  const bodyPart = normalizeBodyPart(item.body_part || item.category);
+  const target = normalizeMuscleName(item.target) || normalizeMuscleName(item.muscle_group) || bodyPart;
+  const primaryMuscles = uniqueValues([
+    normalizeMuscleName(item.target),
+    normalizeMuscleName(item.muscle_group),
+  ]);
+  const secondaryMuscles = uniqueValues([
+    ...(item.secondary_muscles || []).map(normalizeMuscleName),
+    normalizeMuscleName(item.muscle_group),
+  ]).filter(muscle => !primaryMuscles.includes(muscle));
 
   return {
-    id: `wger-${sourceId}`,
-    sourceId,
-    name: item.name || item.exercise_name || item.original_name || '',
-    bodyPart: categoryName || inferBodyPart(primaryMuscles),
-    target: inferTarget(primaryMuscles, categoryName),
+    id: `snapshot-${normalizeExerciseName(name) || String(item.id || '')}`,
+    externalId: String(item.id || ''),
+    name,
+    normalizedName: normalizeExerciseName(name),
+    signature: buildSignature(name),
+    bodyPart,
+    bodyPartFamily: toBodyPartFamily(bodyPart),
+    target,
+    targetFamily: toTargetFamily(target),
     primaryMuscles,
     secondaryMuscles,
-    equipment,
-    images: uniqueValues((baseImages || []).map(mediaItem => extractMediaUrl(mediaItem)).filter(Boolean)),
-    videos: uniqueValues((baseVideos || []).map(mediaItem => extractMediaUrl(mediaItem)).filter(Boolean)),
-    source: 'wger',
+    equipment: uniqueValues([normalizeEquipment(item.equipment)]),
+    images: item.image ? [item.image] : [],
+    videos: item.gif_url ? [item.gif_url] : [],
+    source: 'snapshot',
   };
 }
 
-function extractPaginatedResults(data) {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.results)) return data.results;
-  if (Array.isArray(data?.exercises)) return data.exercises;
-  if (Array.isArray(data?.data)) return data.data;
-  return [];
+function normalizeCatalogComparable(item = {}) {
+  const equipment = Array.isArray(item.equipment) ? item.equipment[0] : item.equipment;
+  return {
+    id: String(item.id || ''),
+    name: item.name || '',
+    normalizedName: normalizeExerciseName(item.name),
+    signature: buildSignature(item.name),
+    bodyPart: item.bodyPart || '',
+    bodyPartFamily: toBodyPartFamily(item.bodyPart || item.body_part),
+    target: item.target || item.muscle_group || '',
+    targetFamily: toTargetFamily(item.target || item.muscle_group),
+    equipment: normalizeExerciseName(equipment),
+  };
 }
 
-async function fetchPaginated(url) {
-  const results = [];
-  let nextUrl = url;
+function scoreCandidate(localItem, externalItem) {
+  const localTokens = tokenize(localItem.name);
+  const externalTokens = tokenize(externalItem.name);
+  if (!localTokens.length || !externalTokens.length) return 0;
 
-  while (nextUrl) {
-    const response = await fetch(nextUrl);
-    if (!response.ok) {
-      throw new Error(`wger request failed: ${response.status}`);
+  const localSet = new Set(localTokens);
+  const externalSet = new Set(externalTokens);
+  const shared = localTokens.filter(token => externalSet.has(token));
+  if (!shared.length) return 0;
+
+  const sharedRatio = shared.length / localSet.size;
+  const candidateCoverage = shared.length / externalSet.size;
+  let score = sharedRatio * 60;
+  score += candidateCoverage * 15;
+
+  if (externalItem.normalizedName.includes(localItem.normalizedName)) score += 10;
+  if (localItem.normalizedName.includes(externalItem.normalizedName)) score += 8;
+  if (localItem.bodyPartFamily && localItem.bodyPartFamily === externalItem.bodyPartFamily) score += 10;
+  if (localItem.targetFamily && localItem.targetFamily === externalItem.targetFamily) score += 10;
+  if (localItem.equipment && localItem.equipment === externalItem.equipment[0]?.toLowerCase()) score += 8;
+  if (localTokens[0] && localTokens[0] === externalTokens[0]) score += 4;
+  if (localTokens[localTokens.length - 1] && localTokens[localTokens.length - 1] === externalTokens[externalTokens.length - 1]) score += 4;
+  if (externalItem.images.length) score += 1;
+  if (externalItem.videos.length) score += 1;
+
+  return Math.round(score * 100) / 100;
+}
+
+function mergeCatalogItems(existingItem, externalItem) {
+  return {
+    id: existingItem.id,
+    sourceId: externalItem.externalId || existingItem.sourceId || existingItem.name,
+    name: externalItem.name,
+    bodyPart: externalItem.bodyPart || existingItem.bodyPart,
+    target: externalItem.target || existingItem.target,
+    primaryMuscles: uniqueValues([...(externalItem.primaryMuscles || []), ...(existingItem.primaryMuscles || [])]),
+    secondaryMuscles: uniqueValues([...(externalItem.secondaryMuscles || []), ...(existingItem.secondaryMuscles || [])]),
+    equipment: uniqueValues([...(externalItem.equipment || []), ...(existingItem.equipment || [])]),
+    images: uniqueValues([...(existingItem.images || []), ...(externalItem.images || [])]),
+    videos: uniqueValues([...(existingItem.videos || []), ...(externalItem.videos || [])]),
+    source: 'snapshot',
+  };
+}
+
+function buildExternalLookups(externalItems) {
+  const byExact = new Map();
+  const bySignature = new Map();
+
+  externalItems.forEach(item => {
+    byExact.set(item.normalizedName, item);
+
+    const list = bySignature.get(item.signature) || [];
+    list.push(item);
+    bySignature.set(item.signature, list);
+  });
+
+  return { byExact, bySignature };
+}
+
+function matchExistingSnapshot(existingSnapshot, externalItems) {
+  const existingComparable = existingSnapshot.map(normalizeCatalogComparable);
+  const { byExact, bySignature } = buildExternalLookups(externalItems);
+  const usedExternalIds = new Set();
+  const matchesBySnapshotId = new Map();
+  const matchesByExternalId = new Map();
+
+  const assignMatch = (snapshotItem, externalItem, reason, score = 0) => {
+    if (!snapshotItem || !externalItem) return;
+    const externalKey = externalItem.externalId || externalItem.id;
+    if (usedExternalIds.has(externalKey) || matchesBySnapshotId.has(snapshotItem.id)) return;
+    usedExternalIds.add(externalKey);
+    matchesBySnapshotId.set(snapshotItem.id, { externalItem, reason, score });
+    matchesByExternalId.set(externalKey, snapshotItem.id);
+  };
+
+  existingComparable.forEach(item => {
+    const exact = byExact.get(item.normalizedName);
+    if (exact) assignMatch(item, exact, 'exact', 999);
+  });
+
+  existingComparable.forEach(item => {
+    if (matchesBySnapshotId.has(item.id)) return;
+    const signatureMatches = bySignature.get(item.signature) || [];
+    if (signatureMatches.length === 1) {
+      assignMatch(item, signatureMatches[0], 'signature', 950);
     }
+  });
 
-    const data = await response.json();
-    const items = extractPaginatedResults(data);
-    results.push(...items);
-    nextUrl = data?.next || null;
-    if (Array.isArray(data)) nextUrl = null;
-  }
-
-  return results;
+  return { matchesBySnapshotId, matchesByExternalId };
 }
 
-async function fetchReferenceMap(url, valueSelector = item => item.name) {
-  try {
-    const rows = await fetchPaginated(url);
-    return new Map(rows.map(item => [item.id, valueSelector(item)]));
-  } catch (error) {
-    return new Map();
-  }
-}
+function buildFinalSnapshot(existingSnapshot, externalItems) {
+  const { matchesBySnapshotId, matchesByExternalId } = matchExistingSnapshot(existingSnapshot, externalItems);
+  const finalItems = [];
+  const generatedAliases = {};
 
-async function fetchMediaMap(url, keyCandidates = ['exercise_base', 'exercise']) {
-  try {
-    const rows = await fetchPaginated(url);
-    const mediaMap = new Map();
-    const fallbackNestedKeys = ['id', 'exercise_base', 'exercise', 'exercise_id', 'exercise_base_id', 'exerciseBase', 'exerciseId'];
-    rows.forEach(item => {
-      const key = keyCandidates
-        .map(candidate => item?.[candidate])
-        .map(value => {
-          if (value === undefined || value === null || value === '') return null;
-          if (typeof value === 'object') {
-            const nested = fallbackNestedKeys.map(nestedKey => value?.[nestedKey]).find(Boolean);
-            return nested ? String(nested) : null;
-          }
-          return String(value);
-        })
-        .find(Boolean);
-      if (!key) return;
-      const normalizedKey = String(key);
-      const list = mediaMap.get(normalizedKey) || [];
-      const mediaUrl = extractMediaUrl(item);
-      if (mediaUrl) list.push(mediaUrl);
-      mediaMap.set(normalizedKey, uniqueValues(list));
-    });
-    return mediaMap;
-  } catch (error) {
-    return new Map();
-  }
-}
-
-async function fetchWgerCatalog() {
-  const [muscles, equipment, categories, images, videos] = await Promise.all([
-    fetchReferenceMap('https://wger.de/api/v2/muscle/?limit=200', item => item.name_en || item.common_name || item.name),
-    fetchReferenceMap('https://wger.de/api/v2/equipment/?limit=200', item => item.name),
-    fetchReferenceMap('https://wger.de/api/v2/exercisecategory/?limit=200', item => item.name),
-    fetchMediaMap('https://wger.de/api/v2/exerciseimage/?limit=200', ['exercise_base', 'exercise', 'exercise_base_id', 'exercise_id']),
-    fetchMediaMap('https://wger.de/api/v2/exercisevideo/?limit=200', ['exercise_base', 'exercise', 'exercise_base_id', 'exercise_id']),
-  ]);
-
-  const referenceMaps = { muscles, equipment, categories, images, videos };
-  const candidateUrls = [
-    'https://wger.de/api/v2/exercisebaseinfo/?limit=200&language=2',
-    'https://wger.de/api/v2/exerciseinfo/?limit=200&language=2',
-    'https://wger.de/api/v2/exercise/?limit=200&language=2',
-  ];
-
-  for (const url of candidateUrls) {
-    try {
-      const rows = await fetchPaginated(url);
-      const normalized = rows
-        .map(item => normalizeWgerExercise(item, referenceMaps))
-        .filter(item => item.name);
-      if (normalized.length) {
-        return normalized.sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
-      }
-    } catch (error) {
-      continue;
-    }
-  }
-
-  return [];
-}
-
-function inferBodyPartFromMuscles(primaryMuscles = [], fallback = '') {
-  return inferBodyPart(primaryMuscles, fallback || 'Strength');
-}
-
-async function fetchOpenSnapshotCatalog() {
-  const response = await fetch('https://raw.githubusercontent.com/exercemus/exercises/minified/minified-exercises.json');
-  if (!response.ok) {
-    throw new Error(`snapshot request failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const exercises = Array.isArray(data?.exercises) ? data.exercises : [];
-
-  return exercises
-    .map((item, index) => {
-      const primaryMuscles = uniqueValues((item.primary_muscles || []).map(coerceName));
-      const secondaryMuscles = uniqueValues((item.secondary_muscles || []).map(coerceName));
-      const bodyPart = inferBodyPartFromMuscles(primaryMuscles, item.category);
-
-      return {
-        id: `snapshot-${normalizeExerciseName(item.name) || index}`,
-        sourceId: item.name || String(index),
-        name: item.name,
-        bodyPart,
-        target: inferTarget(primaryMuscles, item.category || bodyPart),
-        primaryMuscles,
-        secondaryMuscles,
-        equipment: uniqueValues((item.equipment || []).map(coerceName)),
-        images: (item.images || []).filter(Boolean),
-        videos: item.video ? [item.video] : [],
+  externalItems.forEach(externalItem => {
+    const externalKey = externalItem.externalId || externalItem.id;
+    const snapshotId = matchesByExternalId.get(externalKey);
+    if (!snapshotId) {
+      finalItems.push({
+        id: externalItem.id,
+        sourceId: externalItem.externalId || externalItem.name,
+        name: externalItem.name,
+        bodyPart: externalItem.bodyPart,
+        target: externalItem.target,
+        primaryMuscles: externalItem.primaryMuscles,
+        secondaryMuscles: externalItem.secondaryMuscles,
+        equipment: externalItem.equipment,
+        images: externalItem.images,
+        videos: externalItem.videos,
         source: 'snapshot',
-      };
-    })
-    .filter(item => item.name)
-    .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
+      });
+      return;
+    }
+
+    const existingItem = existingSnapshot.find(item => item.id === snapshotId);
+    const merged = mergeCatalogItems(existingItem, externalItem);
+    finalItems.push(merged);
+
+    if (normalizeExerciseName(existingItem.name) !== normalizeExerciseName(merged.name)) {
+      generatedAliases[existingItem.name] = merged.name;
+    }
+  });
+
+  existingSnapshot.forEach(existingItem => {
+    if (matchesBySnapshotId.has(existingItem.id)) return;
+    finalItems.push({
+      ...existingItem,
+      images: uniqueValues(existingItem.images || []),
+      videos: uniqueValues(existingItem.videos || []),
+      source: 'snapshot',
+    });
+  });
+
+  const finalByName = new Map();
+  finalItems.forEach(item => {
+    const key = normalizeExerciseName(item.name);
+    if (!key) return;
+    finalByName.set(key, item);
+  });
+
+  return {
+    snapshot: Array.from(finalByName.values()).sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' })),
+    generatedAliases,
+  };
 }
 
-async function main() {
-  let snapshot = await fetchWgerCatalog();
-  if (!snapshot.length) {
-    snapshot = await fetchOpenSnapshotCatalog();
+function buildSeedAliases(seedItems, finalSnapshot, startingAliases = {}) {
+  const aliases = { ...startingAliases };
+  const finalComparable = finalSnapshot.map(normalizeCatalogComparable);
+  const byExact = new Map(finalComparable.map(item => [item.normalizedName, item]));
+  const bySignature = new Map();
+
+  finalComparable.forEach(item => {
+    const list = bySignature.get(item.signature) || [];
+    list.push(item);
+    bySignature.set(item.signature, list);
+  });
+
+  seedItems.forEach(seedItem => {
+    const comparable = normalizeCatalogComparable(seedItem);
+    const exact = byExact.get(comparable.normalizedName);
+    if (exact) return;
+
+    const signatureMatches = bySignature.get(comparable.signature) || [];
+    if (signatureMatches.length === 1) {
+      aliases[seedItem.name] = signatureMatches[0].name;
+    }
+  });
+
+  return Object.fromEntries(
+    Object.entries(aliases)
+      .filter(([alias, target]) => alias && target && normalizeExerciseName(alias) !== normalizeExerciseName(target))
+      .sort((a, b) => a[0].localeCompare(b[0], 'en', { sensitivity: 'base' }))
+  );
+}
+
+function main() {
+  const externalDatasetPath = path.resolve(
+    process.argv[2] || process.env.EXERCISE_DATASET_PATH || DEFAULT_EXTERNAL_DATASET_PATH
+  );
+
+  if (!fs.existsSync(externalDatasetPath)) {
+    throw new Error(`External dataset not found at ${externalDatasetPath}`);
   }
-  fs.writeFileSync(OUTPUT_PATH, JSON.stringify(snapshot, null, 2));
+
+  const seed = readJson(SEED_PATH);
+  const existingSnapshot = readJson(OUTPUT_PATH);
+  const externalRaw = readJson(externalDatasetPath);
+  const externalItems = externalRaw.map(normalizeExternalExercise);
+  const { snapshot, generatedAliases } = buildFinalSnapshot(existingSnapshot, externalItems);
+  const seedAliases = buildSeedAliases(seed, snapshot, generatedAliases);
+
+  writeJson(OUTPUT_PATH, snapshot);
+  writeJson(ALIAS_OUTPUT_PATH, seedAliases);
+
   console.log(`Wrote ${snapshot.length} exercises to ${OUTPUT_PATH}`);
+  console.log(`Wrote ${Object.keys(seedAliases).length} generated aliases to ${ALIAS_OUTPUT_PATH}`);
 }
 
-main().catch(error => {
-  console.error(error);
-  process.exit(1);
-});
+main();

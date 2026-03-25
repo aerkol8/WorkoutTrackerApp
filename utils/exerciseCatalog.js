@@ -1,3 +1,5 @@
+import generatedExerciseAliases from '../data/exerciseAliases.generated.json';
+
 const BODY_PART_CONFIG = {
   abs: { primary: ['Abs'], secondary: ['Obliques'], equipment: ['Bodyweight'] },
   arms: { primary: ['Biceps', 'Triceps'], secondary: ['Forearms'], equipment: ['Barbell'] },
@@ -25,21 +27,27 @@ const TARGET_TO_MUSCLE = {
 };
 
 export const EXERCISE_ALIASES = {
-  'cable bar pushdown': 'cable triceps pushdown',
+  'back extension': 'hyperextensions back extensions',
+  'cable bar pushdown': 'cable triceps pushdown v bar',
+  'cable crunches': 'cable kneeling crunch',
+  'cable row': 'cable seated row',
   'face pulls': 'face pull',
+  'hammer curl': 'dumbbell hammer curl',
+  'incline dumbell press': 'dumbbell incline bench press',
   'machine chest press': 'chest press machine',
   'lat pulldown': 'lat pull down',
-  'incline dumbell press': 'incline dumbbell press',
-  'machine shoulder press': 'shoulder press machine',
+  'machine shoulder press': 'machine shoulder military press',
   'lateral raise machine': 'lateral raise',
   'machine lateral raise': 'lateral raise',
   'lateral raises': 'lateral raise',
   'dumbbell lateral raises': 'dumbbell lateral raise',
-  'shoulder press machine seated': 'shoulder press machine',
-  'seated shoulder press machine': 'shoulder press machine',
-  'shoulder press machine seat': 'shoulder press machine',
-  'shoulder press machine seaded': 'shoulder press machine',
-  'shoulder press (machine)': 'shoulder press machine',
+  'rope hammer curl': 'cable hammer curl with rope',
+  'shoulder press machine seated': 'machine shoulder military press',
+  'seated shoulder press machine': 'machine shoulder military press',
+  'shoulder press machine seat': 'machine shoulder military press',
+  'shoulder press machine seaded': 'machine shoulder military press',
+  'shoulder press (machine)': 'machine shoulder military press',
+  'triceps pushdown': 'triceps pushdown v bar attachment',
 };
 
 function uniqueValues(values) {
@@ -47,17 +55,21 @@ function uniqueValues(values) {
 }
 
 const SOURCE_PRIORITY = {
-  wger: 4,
-  snapshot: 3,
-  cache: 2,
-  seed: 1,
-  legacy: 0,
+  snapshot: 4,
+  cache: 3,
+  seed: 2,
+  legacy: 1,
 };
+
+const EXERCISE_MEDIA_BASE_URL = String(process.env.EXPO_PUBLIC_EXERCISE_MEDIA_BASE_URL || '')
+  .trim()
+  .replace(/\/+$/g, '');
 
 export function normalizeExerciseName(value = '') {
   return String(value)
     .toLowerCase()
     .replace(/\bdumbell\b/g, 'dumbbell')
+    .replace(/\bbicep\b/g, 'biceps')
     .replace(/\braises\b/g, 'raise')
     .replace(/\bpresses\b/g, 'press')
     .replace(/\bflies\b/g, 'fly')
@@ -262,6 +274,63 @@ function resolveTargetConfig(targetKey = '') {
   };
 }
 
+function isAbsoluteUrl(value = '') {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function normalizeMediaRefs(values = []) {
+  return uniqueValues(
+    (values || [])
+      .map(value => String(value || '').trim())
+      .filter(Boolean)
+  );
+}
+
+function resolveExerciseMediaUrl(value = '') {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) return null;
+  if (isAbsoluteUrl(rawValue)) return rawValue;
+  if (!EXERCISE_MEDIA_BASE_URL) return null;
+  return `${EXERCISE_MEDIA_BASE_URL}/${rawValue.replace(/^\/+/g, '')}`;
+}
+
+function resolveExerciseMediaList(values = []) {
+  return uniqueValues((values || []).map(resolveExerciseMediaUrl).filter(Boolean));
+}
+
+function countUnresolvedMedia(values = []) {
+  if (EXERCISE_MEDIA_BASE_URL) return 0;
+  return (values || []).reduce((count, value) => {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) return count;
+    return isAbsoluteUrl(rawValue) ? count : count + 1;
+  }, 0);
+}
+
+function prepareCatalogEntry(item = {}) {
+  const images = Array.isArray(item.images) ? item.images : [];
+  const videos = Array.isArray(item.videos) ? item.videos : [];
+  const imageRefs = normalizeMediaRefs(
+    Array.isArray(item.imageRefs) && item.imageRefs.length ? item.imageRefs : images
+  );
+  const videoRefs = normalizeMediaRefs(
+    Array.isArray(item.videoRefs) && item.videoRefs.length ? item.videoRefs : videos
+  );
+  const unresolvedImageCount = countUnresolvedMedia(imageRefs);
+  const unresolvedVideoCount = countUnresolvedMedia(videoRefs);
+
+  return {
+    ...item,
+    images: resolveExerciseMediaList(imageRefs),
+    videos: resolveExerciseMediaList(videoRefs),
+    imageRefs,
+    videoRefs,
+    mediaConfigRequired: unresolvedImageCount + unresolvedVideoCount > 0,
+    unresolvedImageCount,
+    unresolvedVideoCount,
+  };
+}
+
 function inferBodyPart(primaryMuscles = [], fallbackBodyPart = '') {
   const first = primaryMuscles[0]?.toLowerCase();
   if (first?.includes('chest')) return 'Chest';
@@ -377,82 +446,7 @@ export function normalizeLegacyExercise(exercise = {}) {
 }
 
 export function buildSeedCatalog(rawExercises = []) {
-  return rawExercises.map(normalizeLegacyExercise);
-}
-
-function resolveReferenceNames(values = [], lookup = new Map(), options = {}) {
-  const normalizer = typeof options.normalizer === 'function' ? options.normalizer : null;
-  return uniqueValues((values || []).map(value => {
-    if (typeof value === 'number') {
-      const resolvedNumeric = lookup.get(value) || null;
-      return normalizer ? normalizer(resolvedNumeric) : resolvedNumeric;
-    }
-    const resolved = typeof value === 'object'
-      ? coerceMuscleName(value.name || value.common_name || value)
-      : coerceMuscleName(value);
-    return normalizer ? normalizer(resolved) : resolved;
-  }));
-}
-
-function extractMediaUrl(mediaItem = {}) {
-  const candidateValues = [
-    mediaItem?.image,
-    mediaItem?.image_url,
-    mediaItem?.url,
-    mediaItem?.video,
-    mediaItem?.video_url,
-    mediaItem?.file,
-    mediaItem?.file_url,
-    mediaItem?.thumbnail,
-  ];
-
-  const resolved = candidateValues.find(value => typeof value === 'string' && value.trim());
-  return resolved ? resolved.trim() : null;
-}
-
-export function normalizeWgerExercise(item = {}, referenceMaps = {}) {
-  const sourceId = String(
-    item.exercise_base ||
-    item.exerciseBase ||
-    item.base_id ||
-    item.id ||
-    ''
-  );
-  const primaryMuscles = uniqueValues(
-    resolveReferenceNames(item.muscles || item.muscles_primary || [], referenceMaps.muscles, {
-      normalizer: canonicalizeMuscleName,
-    })
-  );
-  const secondaryMuscles = uniqueValues(
-    resolveReferenceNames(item.muscles_secondary || item.secondary_muscles || [], referenceMaps.muscles, {
-      normalizer: canonicalizeMuscleName,
-    })
-  );
-  const equipment = inferEquipmentFromName(
-    item.name || item.exercise_name || item.original_name || '',
-    resolveReferenceNames(item.equipment || [], referenceMaps.equipment)
-  );
-  const baseImages = item.images || referenceMaps.images?.get(sourceId) || [];
-  const baseVideos = item.videos || referenceMaps.videos?.get(sourceId) || [];
-  const categoryName =
-    item.category?.name ||
-    referenceMaps.categories?.get(item.category) ||
-    referenceMaps.categories?.get(item.category_id) ||
-    '';
-
-  return {
-    id: `wger-${sourceId}`,
-    sourceId,
-    name: item.name || item.exercise_name || item.original_name || '',
-    bodyPart: categoryName || inferBodyPart(primaryMuscles),
-    target: inferTarget(primaryMuscles, categoryName),
-    primaryMuscles,
-    secondaryMuscles,
-    equipment,
-    images: uniqueValues((baseImages || []).map(mediaItem => extractMediaUrl(mediaItem)).filter(Boolean)),
-    videos: uniqueValues((baseVideos || []).map(mediaItem => extractMediaUrl(mediaItem)).filter(Boolean)),
-    source: 'wger',
-  };
+  return rawExercises.map(normalizeLegacyExercise).map(prepareCatalogEntry);
 }
 
 export function buildExerciseLookup(catalog = [], customAliases = {}) {
@@ -480,6 +474,7 @@ export function buildExerciseLookup(catalog = [], customAliases = {}) {
   });
 
   const mergedAliases = {
+    ...(generatedExerciseAliases || {}),
     ...EXERCISE_ALIASES,
     ...(customAliases || {}),
   };
@@ -501,6 +496,16 @@ function enrichExerciseItem(exercise, lookup) {
   const fallbackName = exercise?.name || '';
   const normalizedName = normalizeExerciseName(fallbackName);
   const signature = buildTokenSignature(fallbackName);
+  const ownImageRefs = normalizeMediaRefs(
+    Array.isArray(exercise?.imageRefs) && exercise.imageRefs.length
+      ? exercise.imageRefs
+      : (exercise?.images || [])
+  );
+  const ownVideoRefs = normalizeMediaRefs(
+    Array.isArray(exercise?.videoRefs) && exercise.videoRefs.length
+      ? exercise.videoRefs
+      : (exercise?.videos || [])
+  );
   const matched =
     lookup.get(normalizedName) ||
     (signature ? lookup.get(`sig:${signature}`) : null);
@@ -513,6 +518,9 @@ function enrichExerciseItem(exercise, lookup) {
     };
   }
 
+  const matchedImageRefs = normalizeMediaRefs(matched.imageRefs || matched.images || []);
+  const matchedVideoRefs = normalizeMediaRefs(matched.videoRefs || matched.videos || []);
+
   return {
     ...exercise,
     catalogExerciseId: matched.id,
@@ -522,8 +530,10 @@ function enrichExerciseItem(exercise, lookup) {
     bodyPart: matched.bodyPart,
     target: matched.target,
     source: matched.source,
-    images: exercise?.images?.length ? exercise.images : matched.images,
-    videos: exercise?.videos?.length ? exercise.videos : matched.videos,
+    images: ownImageRefs.length ? resolveExerciseMediaList(ownImageRefs) : resolveExerciseMediaList(matchedImageRefs),
+    videos: ownVideoRefs.length ? resolveExerciseMediaList(ownVideoRefs) : resolveExerciseMediaList(matchedVideoRefs),
+    imageRefs: ownImageRefs.length ? ownImageRefs : matchedImageRefs,
+    videoRefs: ownVideoRefs.length ? ownVideoRefs : matchedVideoRefs,
     mappingStatus: 'mapped',
   };
 }
@@ -595,137 +605,8 @@ export function mergeCatalogs(seedCatalog = [], remoteCatalog = []) {
     byName.set(normalizedName, pickPreferredCatalogEntry(current, item));
   });
 
-  return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
-}
-
-function extractPaginatedResults(data) {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.results)) return data.results;
-  if (Array.isArray(data?.exercises)) return data.exercises;
-  if (Array.isArray(data?.data)) return data.data;
-  return [];
-}
-
-const WGER_REQUEST_TIMEOUT_MS = 12 * 1000;
-const WGER_MAX_PAGES = 25;
-
-async function fetchWithTimeout(url, options = {}, timeoutMs = WGER_REQUEST_TIMEOUT_MS) {
-  if (typeof AbortController === 'undefined') {
-    return fetch(url, options);
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error(`wger request timeout after ${timeoutMs}ms`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-async function fetchPaginated(url) {
-  const results = [];
-  let nextUrl = url;
-  let pageCount = 0;
-
-  while (nextUrl) {
-    if (pageCount >= WGER_MAX_PAGES) {
-      throw new Error(`wger pagination limit reached (${WGER_MAX_PAGES} pages)`);
-    }
-
-    const response = await fetchWithTimeout(nextUrl);
-    if (!response.ok) {
-      throw new Error(`wger request failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const items = extractPaginatedResults(data);
-    results.push(...items);
-    nextUrl = data?.next || null;
-    if (Array.isArray(data)) nextUrl = null;
-    pageCount += 1;
-  }
-
-  return results;
-}
-
-async function fetchReferenceMap(url, valueSelector = item => item.name) {
-  try {
-    const rows = await fetchPaginated(url);
-    return new Map(rows.map(item => [item.id, valueSelector(item)]));
-  } catch (error) {
-    return new Map();
-  }
-}
-
-async function fetchMediaMap(url, keyCandidates = ['exercise_base', 'exercise']) {
-  try {
-    const rows = await fetchPaginated(url);
-    const mediaMap = new Map();
-    const fallbackNestedKeys = ['id', 'exercise_base', 'exercise', 'exercise_id', 'exercise_base_id', 'exerciseBase', 'exerciseId'];
-    rows.forEach(item => {
-      const key = keyCandidates
-        .map(candidate => item?.[candidate])
-        .map(value => {
-          if (value === undefined || value === null || value === '') return null;
-          if (typeof value === 'object') {
-            const nested = fallbackNestedKeys.map(nestedKey => value?.[nestedKey]).find(Boolean);
-            return nested ? String(nested) : null;
-          }
-          return String(value);
-        })
-        .find(Boolean);
-      if (!key) return;
-      const normalizedKey = String(key);
-      const list = mediaMap.get(normalizedKey) || [];
-      const mediaUrl = extractMediaUrl(item);
-      if (mediaUrl) list.push(mediaUrl);
-      mediaMap.set(normalizedKey, uniqueValues(list));
-    });
-    return mediaMap;
-  } catch (error) {
-    return new Map();
-  }
-}
-
-export async function fetchWgerCatalog() {
-  const [muscles, equipment, categories, images, videos] = await Promise.all([
-    fetchReferenceMap('https://wger.de/api/v2/muscle/?limit=200', item => item.name_en || item.common_name || item.name),
-    fetchReferenceMap('https://wger.de/api/v2/equipment/?limit=200', item => item.name),
-    fetchReferenceMap('https://wger.de/api/v2/exercisecategory/?limit=200', item => item.name),
-    fetchMediaMap('https://wger.de/api/v2/exerciseimage/?limit=200', ['exercise_base', 'exercise', 'exercise_base_id', 'exercise_id']),
-    fetchMediaMap('https://wger.de/api/v2/exercisevideo/?limit=200', ['exercise_base', 'exercise', 'exercise_base_id', 'exercise_id']),
-  ]);
-
-  const referenceMaps = { muscles, equipment, categories, images, videos };
-  const candidateUrls = [
-    'https://wger.de/api/v2/exercisebaseinfo/?limit=200&language=2',
-    'https://wger.de/api/v2/exerciseinfo/?limit=200&language=2',
-    'https://wger.de/api/v2/exercise/?limit=200&language=2',
-  ];
-
-  let rawExercises = [];
-  for (const url of candidateUrls) {
-    try {
-      const rows = await fetchPaginated(url);
-      const normalized = rows
-        .map(item => normalizeWgerExercise(item, referenceMaps))
-        .filter(item => item.name);
-      if (normalized.length) {
-        rawExercises = normalized;
-        break;
-      }
-    } catch (error) {
-      continue;
-    }
-  }
-
-  return rawExercises
+  return Array.from(byName.values())
+    .map(prepareCatalogEntry)
     .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
 }
 

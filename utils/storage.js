@@ -17,5 +17,4 @@ export const STORAGE_KEYS = {
 };
 
 export const BACKUP_VERSION = 1;
-export const EXERCISE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
-export const EXERCISE_CATALOG_CACHE_VERSION = 2;
+export const EXERCISE_CATALOG_CACHE_VERSION = 3;

@@ -8,6 +8,8 @@ const transformModulesCommonjs = require('@babel/plugin-transform-modules-common
 const projectRoot = path.resolve(__dirname, '..');
 const originalJsLoader = Module._extensions['.js'];
 
+process.env.EXPO_PUBLIC_EXERCISE_MEDIA_BASE_URL = 'https://media.example.com';
+
 Module._extensions['.js'] = function codexTranspile(module, filename) {
   const isProjectJs = filename.startsWith(path.join(projectRoot, 'utils'));
   if (!isProjectJs) {
@@ -181,6 +183,52 @@ assert.equal(shoulderAliasEnriched.routines[0].exercises[0].mappingStatus, 'mapp
 assert.equal(shoulderAliasEnriched.routines[0].exercises[1].mappingStatus, 'mapped');
 assert.ok(shoulderAliasEnriched.routines[0].exercises[1].primaryMuscles.includes('Shoulders'));
 
+const generatedAliasCatalog = [
+  {
+    id: 'snapshot-machine-crunch',
+    sourceId: '1000',
+    name: 'Machine Crunch',
+    bodyPart: 'Abs',
+    target: 'Abs',
+    primaryMuscles: ['Abs'],
+    secondaryMuscles: [],
+    equipment: ['Machine'],
+    images: [],
+    videos: [],
+    source: 'snapshot',
+  },
+];
+const generatedAliasEnriched = enrichWorkoutData({
+  routines: [{ id: 'r-generated', exercises: [{ name: 'Crunch Machine', sets: [{ isDone: true }] }] }],
+  history: [],
+}, generatedAliasCatalog);
+assert.equal(generatedAliasEnriched.routines[0].exercises[0].mappingStatus, 'mapped');
+assert.equal(generatedAliasEnriched.routines[0].exercises[0].catalogExerciseId, 'snapshot-machine-crunch');
+
+const mediaCatalog = [
+  {
+    id: 'snapshot-pull-up',
+    sourceId: '1234',
+    name: 'Pull-Up',
+    bodyPart: 'Back',
+    target: 'Lats',
+    primaryMuscles: ['Lats'],
+    secondaryMuscles: ['Biceps'],
+    equipment: ['Bodyweight'],
+    images: ['images/1234-example.jpg'],
+    videos: ['videos/1234-example.gif'],
+    source: 'snapshot',
+  },
+];
+const mediaEnriched = enrichWorkoutData({
+  routines: [{ id: 'r-media', exercises: [{ name: 'Pull Up', sets: [{ isDone: true }] }] }],
+  history: [],
+}, mediaCatalog);
+assert.equal(mediaEnriched.routines[0].exercises[0].images[0], 'https://media.example.com/images/1234-example.jpg');
+assert.equal(mediaEnriched.routines[0].exercises[0].videos[0], 'https://media.example.com/videos/1234-example.gif');
+assert.equal(mediaEnriched.routines[0].exercises[0].imageRefs[0], 'images/1234-example.jpg');
+assert.equal(mediaEnriched.routines[0].exercises[0].videoRefs[0], 'videos/1234-example.gif');
+
 const score = getExerciseVolumeScore(enriched.history[0].exercises[0]);
 assert.equal(score.score, 200);
 
@@ -323,5 +371,29 @@ assert.equal(monthlySummary.goalHitDays.protein, 2);
 
 const localDate = new Date(2026, 2, 10, 0, 0, 0);
 assert.equal(toLocalDateKey(localDate), '2026-03-10');
+
+const exerciseCatalogModulePath = require.resolve('../utils/exerciseCatalog.js');
+delete process.env.EXPO_PUBLIC_EXERCISE_MEDIA_BASE_URL;
+delete require.cache[exerciseCatalogModulePath];
+const { mergeCatalogs: mergeCatalogsWithoutMediaBase } = require('../utils/exerciseCatalog.js');
+const unresolvedSnapshotCatalog = mergeCatalogsWithoutMediaBase([], [
+  {
+    id: 'snapshot-local-video',
+    name: 'Local Video Demo',
+    source: 'snapshot',
+    primaryMuscles: ['Chest'],
+    secondaryMuscles: [],
+    equipment: ['Bodyweight'],
+    images: ['images/demo.jpg'],
+    videos: ['videos/demo.gif'],
+  },
+]);
+assert.equal(unresolvedSnapshotCatalog[0].images.length, 0);
+assert.equal(unresolvedSnapshotCatalog[0].videos.length, 0);
+assert.equal(unresolvedSnapshotCatalog[0].imageRefs[0], 'images/demo.jpg');
+assert.equal(unresolvedSnapshotCatalog[0].videoRefs[0], 'videos/demo.gif');
+assert.equal(unresolvedSnapshotCatalog[0].unresolvedImageCount, 1);
+assert.equal(unresolvedSnapshotCatalog[0].unresolvedVideoCount, 1);
+assert.equal(unresolvedSnapshotCatalog[0].mediaConfigRequired, true);
 
 console.log('Smoke tests passed');

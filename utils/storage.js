@@ -1,5 +1,6 @@
 export const STORAGE_KEYS = {
   guestMode: '@guestMode',
+  guestMigrationStatusPrefix: '@guest_migration_status:',
   routines: '@routines',
   history: '@history',
   nutrition: '@nutrition',

@@ -35,6 +35,7 @@ const {
   mergeCatalogs,
   normalizeExerciseName,
 } = require('../utils/exerciseCatalog.js');
+const guestMigration = require('../utils/guestMigration.js');
 const {
   dedupeFoods,
   isBarcodeQuery,
@@ -51,6 +52,14 @@ const {
   getGoalStatus,
 } = require('../utils/nutritionInsights.js');
 const { toLocalDateKey } = require('../utils/date.js');
+
+const {
+  buildGuestMigrationWritePayloads: buildGuestMigrationPayloads,
+  createGuestMigrationStatusKey: guestMigrationStatusKey,
+  hasGuestSnapshotData: guestSnapshotHasData,
+  hasRemoteAccountData: remoteAccountHasData,
+  normalizeGuestSnapshot: normalizeMigrationSnapshot,
+} = guestMigration;
 
 const backup = createBackupPayload({
   isGuest: true,
@@ -105,6 +114,40 @@ assert.deepEqual(parsedWithInvalidTypes.nutrition.favoriteFoods, []);
 assert.deepEqual(parsedWithInvalidTypes.nutrition.dailyMeals, {});
 assert.equal(parsedWithInvalidTypes.nutrition.dailyGoals.calories, 2200);
 assert.deepEqual(parsedWithInvalidTypes.profile.measurements, []);
+
+const normalizedMigrationSnapshot = normalizeMigrationSnapshot({
+  workout: { routines: 'bad', history: [{ id: 'h1' }], exerciseAliases: [] },
+  nutrition: { dailyMeals: [], favoriteFoods: [{ id: 'fav-1' }] },
+  profile: { profile: { height: '181' }, measurements: {} },
+});
+assert.deepEqual(normalizedMigrationSnapshot.workout.routines, []);
+assert.equal(normalizedMigrationSnapshot.workout.history.length, 1);
+assert.equal(normalizedMigrationSnapshot.nutrition.favoriteFoods.length, 1);
+assert.equal(normalizedMigrationSnapshot.profile.profile.height, '181');
+assert.deepEqual(normalizedMigrationSnapshot.profile.measurements, []);
+assert.equal(guestMigrationStatusKey('user-123'), '@guest_migration_status:user-123');
+assert.equal(guestSnapshotHasData({ workout: { history: [{ id: '1' }] } }), true);
+assert.equal(guestSnapshotHasData({}), false);
+assert.equal(remoteAccountHasData({ profile: { profile: { height: '175' } } }), true);
+assert.equal(remoteAccountHasData({}), false);
+
+const migrationPayloads = buildGuestMigrationPayloads({
+  workout: { routines: [{ id: 'r1' }], history: [], exerciseAliases: { squat: 'Back Squat' } },
+  nutrition: {
+    dailyMeals: { '2026-03-25': [{ id: 'm1' }] },
+    favoriteFoods: [],
+    dailyGoals: { calories: 2500 },
+    mealTemplates: [],
+    scanHistory: [],
+  },
+  profile: {
+    profile: { gender: 'male', height: '182' },
+    measurements: [{ id: 'p1' }],
+  },
+}, { timestamp: '2026-03-25T10:00:00.000Z' });
+assert.equal(migrationPayloads.workout.guestMigratedAt, '2026-03-25T10:00:00.000Z');
+assert.equal(migrationPayloads.nutrition.dailyGoals.calories, 2500);
+assert.equal(migrationPayloads.profile.measurements.length, 1);
 
 const seedCatalog = buildSeedCatalog([
   { id: '1', name: 'Barbell Curl', bodyPart: 'Arms', target: 'Biceps' },

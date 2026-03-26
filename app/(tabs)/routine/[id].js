@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { View, Text, FlatList, TouchableOpacity, Modal, StyleSheet, ActivityIndicator, TextInput, Vibration, AppState, Platform } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { useWorkout } from '../../../context/WorkoutContext';
@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import { toLocalDateKey } from '../../../utils/date';
+import { buildExerciseAliasIndex, matchesExerciseSearch } from '../../../utils/exerciseCatalog';
 
 // Notification settings
 Notifications.setNotificationHandler({
@@ -25,6 +26,7 @@ export default function RoutineDetail() {
     finishWorkout, 
     routines, 
     library,
+    exerciseAliases,
     addExerciseToSpecificRoutine, 
     deleteExerciseFromRoutine,
     addNewSet,
@@ -124,11 +126,11 @@ export default function RoutineDetail() {
 
   // --- SEARCH FILTER ---
   // We'll use this list while searching exercises in the modal
-  const filteredExercises = (library || []).filter(ex =>
-    ex.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    ex.bodyPart.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (ex.primaryMuscles || []).some(muscle => muscle.toLowerCase().includes(searchQuery.toLowerCase()))
+  const aliasIndex = useMemo(
+    () => buildExerciseAliasIndex(library, exerciseAliases),
+    [library, exerciseAliases]
   );
+  const filteredExercises = (library || []).filter(ex => matchesExerciseSearch(ex, searchQuery, aliasIndex));
   const handleResetTimer = () => {
     setIsActive(false);
     setSeconds(0);

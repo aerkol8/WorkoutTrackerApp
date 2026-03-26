@@ -28,12 +28,15 @@ Module._extensions['.js'] = function codexTranspile(module, filename) {
 
 const { createBackupPayload, parseBackupString, serializeBackup } = require('../utils/backup.js');
 const {
+  buildExerciseAliasIndex,
   buildSeedCatalog,
   computeMuscleDashboard,
   enrichWorkoutData,
   getExerciseVolumeScore,
+  matchesExerciseSearch,
   mergeCatalogs,
   normalizeExerciseName,
+  suggestCatalogMatches,
 } = require('../utils/exerciseCatalog.js');
 const guestMigration = require('../utils/guestMigration.js');
 const {
@@ -207,6 +210,41 @@ const facePullAliasEnriched = enrichWorkoutData({
 }, facePullCatalog);
 assert.equal(facePullAliasEnriched.routines[0].exercises[0].mappingStatus, 'mapped');
 assert.equal(facePullAliasEnriched.routines[0].exercises[0].catalogExerciseId, 'snapshot-face-pull');
+
+const aliasSearchCatalog = [
+  {
+    id: 'snapshot-lever-chest-press',
+    sourceId: '2001',
+    name: 'Lever Chest Press',
+    bodyPart: 'Chest',
+    target: 'Chest',
+    primaryMuscles: ['Chest'],
+    secondaryMuscles: ['Triceps'],
+    equipment: ['Machine'],
+    images: [],
+    videos: [],
+    source: 'snapshot',
+  },
+  {
+    id: 'snapshot-wide-grip-lat',
+    sourceId: '2002',
+    name: 'Twin Handle Parallel Grip Lat Pulldown',
+    bodyPart: 'Back',
+    target: 'Lats',
+    primaryMuscles: ['Lats'],
+    secondaryMuscles: ['Biceps'],
+    equipment: ['Machine'],
+    images: [],
+    videos: [],
+    source: 'snapshot',
+  },
+];
+const aliasSearchIndex = buildExerciseAliasIndex(aliasSearchCatalog);
+assert.ok((aliasSearchIndex.get('snapshot-lever-chest-press') || []).includes('plate loaded chest press'));
+assert.equal(matchesExerciseSearch(aliasSearchCatalog[0], 'plate loaded chest press', aliasSearchIndex), true);
+assert.equal(matchesExerciseSearch(aliasSearchCatalog[1], 'wide grip lat pulldown', aliasSearchIndex), true);
+assert.equal(suggestCatalogMatches('plate loaded chest press', aliasSearchCatalog, 1)[0].id, 'snapshot-lever-chest-press');
+assert.equal(suggestCatalogMatches('wide grip lat pulldown', aliasSearchCatalog, 1)[0].id, 'snapshot-wide-grip-lat');
 
 const shoulderCatalog = buildSeedCatalog([
   { id: '53', name: 'Shoulder Press Machine', bodyPart: 'Shoulders', target: 'Deltoids' },

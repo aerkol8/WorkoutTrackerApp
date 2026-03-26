@@ -27,27 +27,41 @@ const TARGET_TO_MUSCLE = {
 };
 
 export const EXERCISE_ALIASES = {
-  'back extension': 'hyperextensions back extensions',
-  'cable bar pushdown': 'cable triceps pushdown v bar',
-  'cable crunches': 'cable kneeling crunch',
-  'cable row': 'cable seated row',
+  'back extension': 'Back Extension',
+  'cable bar pushdown': 'Cable Triceps Pushdown (V-Bar)',
+  'cable crunches': 'Cable Kneeling Crunch',
+  'cable rear delt fly': 'Cable Rear Delt Row (Stirrups)',
+  'cable row': 'Cable Seated Wide-Grip Row',
+  'chest fly machine': 'Lever Seated Fly',
+  'close grip lat pulldown': 'Band Close-Grip Pulldown',
+  'dumbbell curl': 'Dumbbell Biceps Curl',
   'face pulls': 'face pull',
-  'hammer curl': 'dumbbell hammer curl',
-  'incline dumbell press': 'dumbbell incline bench press',
-  'machine chest press': 'chest press machine',
-  'lat pulldown': 'lat pull down',
-  'machine shoulder press': 'machine shoulder military press',
-  'lateral raise machine': 'lateral raise',
-  'machine lateral raise': 'lateral raise',
+  'hammer curl': 'Dumbbell Hammer Curl',
+  'incline dumbell press': 'Dumbbell Incline Bench Press',
+  'machine chest fly': 'Lever Seated Fly',
+  'machine chest press': 'Lever Chest Press',
+  'lat pulldown': 'Cable Lat Pulldown Full Range Of Motion',
+  'machine shoulder press': 'Lever Shoulder Press',
+  'lateral raise machine': 'Lever Lateral Raise',
+  'machine lateral raise': 'Lever Lateral Raise',
   'lateral raises': 'lateral raise',
-  'dumbbell lateral raises': 'dumbbell lateral raise',
-  'rope hammer curl': 'cable hammer curl with rope',
-  'shoulder press machine seated': 'machine shoulder military press',
-  'seated shoulder press machine': 'machine shoulder military press',
-  'shoulder press machine seat': 'machine shoulder military press',
-  'shoulder press machine seaded': 'machine shoulder military press',
-  'shoulder press (machine)': 'machine shoulder military press',
-  'triceps pushdown': 'triceps pushdown v bar attachment',
+  'dumbbell lateral raises': 'Dumbbell Lateral Raise',
+  'overhead rope extension': 'Cable Overhead Triceps Extension (Rope Attachment)',
+  'overhead rope triceps extension': 'Cable Overhead Triceps Extension (Rope Attachment)',
+  'plate loaded chest press': 'Lever Chest Press',
+  'plate loaded wide grip row': 'Cable Seated Wide-Grip Row',
+  'reverse barbell curl': 'Barbell Reverse Curl',
+  'rope hammer curl': 'Cable Hammer Curl (With Rope)',
+  'shoulder press machine': 'Lever Shoulder Press',
+  'shoulder press machine seated': 'Lever Shoulder Press',
+  'seated shoulder press machine': 'Lever Shoulder Press',
+  'shoulder press machine seat': 'Lever Shoulder Press',
+  'shoulder press machine seaded': 'Lever Shoulder Press',
+  'shoulder press (machine)': 'Lever Shoulder Press',
+  'smith machine low incline press': 'Smith Incline Bench Press',
+  'smith machine squat': 'Smith Squat',
+  'triceps pushdown': 'Cable Triceps Pushdown (V-Bar)',
+  'wide grip lat pulldown': 'Twin Handle Parallel Grip Lat Pulldown',
 };
 
 function uniqueValues(values) {
@@ -473,11 +487,7 @@ export function buildExerciseLookup(catalog = [], customAliases = {}) {
     }
   });
 
-  const mergedAliases = {
-    ...(generatedExerciseAliases || {}),
-    ...EXERCISE_ALIASES,
-    ...(customAliases || {}),
-  };
+  const mergedAliases = getMergedExerciseAliases(customAliases);
 
   Object.entries(mergedAliases).forEach(([alias, canonical]) => {
     const target = lookup.get(normalizeExerciseName(canonical));
@@ -490,6 +500,59 @@ export function buildExerciseLookup(catalog = [], customAliases = {}) {
   });
 
   return lookup;
+}
+
+function getMergedExerciseAliases(customAliases = {}) {
+  return {
+    ...(generatedExerciseAliases || {}),
+    ...EXERCISE_ALIASES,
+    ...(customAliases || {}),
+  };
+}
+
+function getCatalogSearchKey(item = {}) {
+  return item.id || normalizeExerciseName(item.name);
+}
+
+export function buildExerciseAliasIndex(catalog = [], customAliases = {}) {
+  const lookup = new Map();
+  const aliasIndex = new Map();
+
+  (catalog || []).forEach(item => {
+    const normalizedName = normalizeExerciseName(item?.name);
+    if (!normalizedName) return;
+    lookup.set(normalizedName, item);
+  });
+
+  Object.entries(getMergedExerciseAliases(customAliases)).forEach(([alias, canonical]) => {
+    const normalizedAlias = normalizeExerciseName(alias);
+    const target = lookup.get(normalizeExerciseName(canonical));
+    if (!normalizedAlias || !target) return;
+    const key = getCatalogSearchKey(target);
+    const aliases = aliasIndex.get(key) || [];
+    aliasIndex.set(key, uniqueValues([...aliases, normalizedAlias]));
+  });
+
+  return aliasIndex;
+}
+
+export function matchesExerciseSearch(exercise = {}, query = '', aliasIndex = new Map()) {
+  const normalizedQuery = normalizeExerciseName(query);
+  if (!normalizedQuery) return true;
+
+  const searchTerms = uniqueValues([
+    exercise.name,
+    exercise.bodyPart,
+    exercise.target,
+    ...(exercise.primaryMuscles || []),
+    ...(exercise.secondaryMuscles || []),
+    ...(exercise.equipment || []),
+    ...(aliasIndex.get(getCatalogSearchKey(exercise)) || []),
+  ])
+    .map(normalizeExerciseName)
+    .filter(Boolean);
+
+  return searchTerms.some(term => term.includes(normalizedQuery));
 }
 
 function enrichExerciseItem(exercise, lookup) {
@@ -560,25 +623,33 @@ export function enrichWorkoutData({ routines = [], history = [] }, catalog = [],
   };
 }
 
-export function suggestCatalogMatches(query = '', catalog = [], limit = 3) {
+export function suggestCatalogMatches(query = '', catalog = [], limit = 3, customAliases = {}) {
   const normalizedQuery = normalizeExerciseName(query);
   if (!normalizedQuery) return [];
 
   const queryTokens = normalizedQuery.split(' ').filter(Boolean);
+  const aliasIndex = buildExerciseAliasIndex(catalog, customAliases);
 
   const scored = (catalog || [])
     .map(item => {
       const normalizedName = normalizeExerciseName(item.name);
       const nameTokens = normalizedName.split(' ').filter(Boolean);
+      const aliases = aliasIndex.get(getCatalogSearchKey(item)) || [];
       const matchingTokens = queryTokens.filter(token => nameTokens.includes(token)).length;
+      const aliasMatchingTokens = queryTokens.filter(token => aliases.some(alias => alias.includes(token))).length;
       const startsWith = normalizedName.startsWith(normalizedQuery);
       const contains = normalizedName.includes(normalizedQuery);
+      const aliasStartsWith = aliases.some(alias => alias.startsWith(normalizedQuery));
+      const aliasContains = aliases.some(alias => alias.includes(normalizedQuery));
       const hasVideo = (item.videos || []).length > 0;
       const hasImage = (item.images || []).length > 0;
       const score =
         (startsWith ? 6 : 0) +
         (contains ? 4 : 0) +
+        (aliasStartsWith ? 5 : 0) +
+        (aliasContains ? 3 : 0) +
         matchingTokens * 2 +
+        aliasMatchingTokens * 2 +
         (hasVideo ? 2 : 0) +
         (hasImage ? 1 : 0);
 

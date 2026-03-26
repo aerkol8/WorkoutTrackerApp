@@ -331,16 +331,6 @@ function buildFinalSnapshot(existingSnapshot, externalItems) {
     }
   });
 
-  existingSnapshot.forEach(existingItem => {
-    if (matchesBySnapshotId.has(existingItem.id)) return;
-    finalItems.push({
-      ...existingItem,
-      images: uniqueValues(existingItem.images || []),
-      videos: uniqueValues(existingItem.videos || []),
-      source: 'snapshot',
-    });
-  });
-
   const finalByName = new Map();
   finalItems.forEach(item => {
     const key = normalizeExerciseName(item.name);

@@ -15,7 +15,11 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useWorkout } from '../../context/WorkoutContext';
-import { suggestCatalogMatches } from '../../utils/exerciseCatalog';
+import {
+  buildExerciseAliasIndex,
+  matchesExerciseSearch,
+  suggestCatalogMatches,
+} from '../../utils/exerciseCatalog';
 import { resolveExerciseMediaCandidates, resolveExerciseMediaLink } from '../../utils/exerciseMedia';
 import { toLocalDateKey } from '../../utils/date';
 
@@ -461,6 +465,7 @@ export default function ExercisesScreen() {
   const {
     library,
     history,
+    exerciseAliases,
     catalogMeta,
     dashboard7,
     dashboard30,
@@ -472,16 +477,15 @@ export default function ExercisesScreen() {
   const bodyParts = useMemo(() => (
     ['all', ...Array.from(new Set((library || []).map(item => item.bodyPart).filter(Boolean))).sort()]
   ), [library]);
+  const aliasIndex = useMemo(
+    () => buildExerciseAliasIndex(library, exerciseAliases),
+    [library, exerciseAliases]
+  );
 
   const filteredExercises = useMemo(() => (
     (library || [])
       .filter(exercise => {
-        const q = searchQuery.trim().toLowerCase();
-        const matchesQuery = !q ||
-          exercise.name.toLowerCase().includes(q) ||
-          exercise.bodyPart.toLowerCase().includes(q) ||
-          (exercise.primaryMuscles || []).some(muscle => muscle.toLowerCase().includes(q)) ||
-          (exercise.equipment || []).some(item => item.toLowerCase().includes(q));
+        const matchesQuery = matchesExerciseSearch(exercise, searchQuery, aliasIndex);
         const matchesBodyPart = selectedBodyPart === 'all' || exercise.bodyPart === selectedBodyPart;
         const { imageCount, videoCount } = getExerciseMediaCounts(exercise);
         const matchesMedia = selectedMediaFilter === 'all'
@@ -490,7 +494,7 @@ export default function ExercisesScreen() {
         return matchesQuery && matchesBodyPart && matchesMedia;
       })
       .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }))
-  ), [library, searchQuery, selectedBodyPart, selectedMediaFilter]);
+  ), [aliasIndex, library, searchQuery, selectedBodyPart, selectedMediaFilter]);
 
   const weeklyMuscles = useMemo(
     () => dashboard7.muscles
@@ -559,9 +563,9 @@ export default function ExercisesScreen() {
   const unmappedWithSuggestions = useMemo(
     () => unmappedSummary.map(item => ({
       ...item,
-      suggestions: suggestCatalogMatches(item.name, library, 2),
+      suggestions: suggestCatalogMatches(item.name, library, 2, exerciseAliases),
     })),
-    [unmappedSummary, library]
+    [exerciseAliases, unmappedSummary, library]
   );
   const sessionRhythm14 = useMemo(() => buildSessionRhythm(history, 14), [history]);
   const rhythmMaxSetUnits = useMemo(
